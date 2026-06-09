@@ -7,18 +7,17 @@ import 'package:Picon/booking_screen.dart';
 import 'package:Picon/booking_status_screen.dart';
 import 'package:Picon/contact_screen.dart';
 import 'package:Picon/history_screen.dart';
-import 'package:Picon/no_connection_screen.dart';
-import 'package:Picon/notifications_screen.dart';
 import 'package:Picon/portfolio_screen.dart';
 import 'package:Picon/pricing_screen.dart';
 import 'package:Picon/profile_page.dart';
 import 'package:Picon/photo_preview_screen.dart';
+import 'package:Picon/models/photo_format.dart';
+import 'package:Picon/models/photo_frame.dart';
 import 'package:Picon/utils/colors.dart';
-import 'package:Picon/utils/connectivity_service.dart';
+import 'package:Picon/utils/order_line_pricing.dart';
 import 'package:Picon/utils/geometric_background.dart';
 import 'package:Picon/utils/realtime_service.dart';
 import 'package:carousel_slider/carousel_slider.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:intl/intl.dart';
@@ -34,6 +33,8 @@ import 'package:Picon/models/booking.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:Picon/utils/print_quality_utils.dart';
 import 'package:Picon/utils/image_helper.dart';
+import 'package:Picon/widgets/notification_bell_button.dart';
+import 'package:Picon/widgets/auth_network_image.dart';
 import 'package:Picon/widgets/safe_photo_thumbnail.dart';
 
 // --- Model Class for Real History Data ---
@@ -85,10 +86,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   File? _avatar;
   final Map<String, Map<String, dynamic>> _photoDetails = {};
 
-  final ConnectivityService _connectivityService = ConnectivityService();
-  late StreamSubscription<ConnectivityResult> _connectivitySubscription;
-  bool _isOffline = false;
-
   // --- Updatable profile info ---
   late String _currentUserName;
   late String _currentUserLastName;
@@ -99,12 +96,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _isExpress = false;
   double _totalPrice = 0.0;
   Map<String, double>? _prices;
+  Map<String, double?>? _framePrices;
+  List<PhotoFrame> _frames = [];
   bool _isLoadingPrices = true;
   bool _isUploading = false;
   Future<List<Promotion>>? _promotionsFuture;
   Future<List<HistoryItem>>? _historyFuture;
   RealtimeService? _realtimeService;
   List<dynamic> _featuredContents = []; // FeaturedContent depuis la BDD
+  final GlobalKey<NotificationBellButtonState> _notificationBellKey =
+      GlobalKey<NotificationBellButtonState>();
   // --- End of new state variables ---
 
 
@@ -118,24 +119,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _promotionsFuture = ApiService.fetchPromotions();
     _historyFuture = _fetchRecentHistory();
     _loadFeaturedContents();
-    _connectivitySubscription =
-        _connectivityService.connectivityStream.listen((result) {
-      if (result == ConnectivityResult.none) {
-        if (!_isOffline && mounted) {
-          setState(() {
-            _isOffline = true;
-          });
-          Navigator.of(context).push(MaterialPageRoute(
-              builder: (context) => const NoConnectionScreen()));
-        }
-      } else {
-        if (_isOffline && mounted) {
-          setState(() {
-            _isOffline = false;
-          });
-        }
-      }
-    });
     _fetchPrices();
     _initRealtime();
     WidgetsBinding.instance.addObserver(this);
@@ -145,6 +128,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       ApiService.shouldClearCart = false;
       WidgetsBinding.instance.addPostFrameCallback((_) => _clearCart());
     }
+  }
+
+  void _refreshNotificationBadge() {
+    _notificationBellKey.currentState?.refresh();
   }
 
   void _initRealtime() {
@@ -162,7 +149,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           } else if (type == 'DIMENSIONS_UPDATED') {
             _fetchPrices();
           } else if (type == 'FEATURED_UPDATED') {
-            // Optionnel: ajouter un futur pour le contenu à la une si nécessaire
+            _loadFeaturedContents();
           }
         }
       },
@@ -188,6 +175,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       }),
     ];
     await Future.wait(detailTasks);
+    _refreshNotificationBadge();
   }
 
   Future<List<HistoryItem>> _fetchRecentHistory() async {
@@ -235,13 +223,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _fetchPrices() async {
     try {
-      final fetchedDimensions = await ApiService.fetchDimensions();
+      final results = await Future.wait([
+        ApiService.fetchDimensions(),
+        ApiService.fetchFrames(),
+      ]);
+      final fetchedDimensions = results[0] as List<PhotoFormat>;
+      final fetchedFrames = results[1] as List<PhotoFrame>;
       if (mounted) {
         setState(() {
           _prices = {
             for (var dim in fetchedDimensions) dim.dimension: dim.price
           };
-          // _calculateTotal(); // Note: if _calculateTotal is needed, ensure it exists
+          _framePrices = {
+            for (var dim in fetchedDimensions) dim.dimension: dim.framePrice
+          };
+          _frames = fetchedFrames;
           _isLoadingPrices = false;
         });
       }
@@ -262,16 +258,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && ApiService.shouldClearCart) {
-      ApiService.shouldClearCart = false;
-      _clearCart();
+    if (state == AppLifecycleState.resumed) {
+      _refreshNotificationBadge();
+      if (ApiService.shouldClearCart) {
+        ApiService.shouldClearCart = false;
+        _clearCart();
+      }
     }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _connectivitySubscription.cancel();
     _realtimeService?.disconnect();
     super.dispose();
   }
@@ -317,6 +315,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       setState(() {
         _currentIndex = index;
       });
+      if (index == 0) {
+        _refreshNotificationBadge();
+      }
     }
   }
 
@@ -342,7 +343,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final picker = ImagePicker();
     List<XFile> pickedFiles = [];
     try {
-      pickedFiles = await picker.pickMultiImage(imageQuality: 50);
+      pickedFiles = await picker.pickMultiImage();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -379,6 +380,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 images: tempImages,
                 photoDetails: tempDetails,
                 prices: _prices!,
+                framePrices: _framePrices ?? const {},
+                frames: _frames,
               ),
             ),
           );
@@ -514,14 +517,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Widget _buildFixedTopBar(BuildContext context) {
     return ClipRRect(
+      clipBehavior: Clip.none,
       borderRadius: const BorderRadius.vertical(
           bottom: Radius.circular(20)), // Rounded bottom corners
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10), // Increased blur
-        child: Container(
+      child: Container(
           decoration: BoxDecoration(
-            color: AppColors.primary
-                .withOpacity(0.4), // Slightly transparent primary color
+            color: AppColors.primary.withOpacity(0.96),
             border: Border.all(
                 color: Colors.white.withOpacity(0.2)), // Subtle border
             borderRadius:
@@ -593,7 +594,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     Flexible(
                       child: Image.asset(
                         'assets/images/pro.png',
-                        height: 75, // Agrandissement du logo
+                        height: 40,
                         fit: BoxFit.contain,
                       ),
                     ),
@@ -601,21 +602,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ],
                 ),
               ),
-              IconButton(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (context) => const NotificationsScreen()),
-                  );
-                },
-                icon: const Icon(Icons.notifications_none,
-                    color: Colors.white, size: 28), // Increased icon size
+              NotificationBellButton(
+                key: _notificationBellKey,
+                iconColor: Colors.white,
+                iconSize: 28,
               ),
             ],
           ),
         ),
-      ),
     );
   }
 
@@ -710,13 +704,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       } else {
                         // Vérifier si la photo est incompatible avec tous les formats
                         if (_prices != null && _prices!.isNotEmpty) {
-                          final size = await _loadImageSizeLocal(imageUrl);
-                          double bestDpi = 0;
-                          for (final dim in _prices!.keys) {
-                            final d = computeDpi(size, dim);
-                            if (d > bestDpi) bestDpi = d;
-                          }
-                          
+                          await _loadImageSizeLocal(imageUrl);
                         }
                         setState(() {
                           _selectedImages.add(imageUrl);
@@ -819,7 +807,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   padding: const EdgeInsets.all(4.0),
                   child: Column(
                     children: [
-                      TextButton.icon(
+                      ElevatedButton.icon(
                         onPressed: () async {
                           if (_prices == null || _prices!.isEmpty) return;
                           // Copie des détails pour la preview — ne s'applique que si confirmé
@@ -835,6 +823,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                 images: tempImages,
                                 photoDetails: tempDetails,
                                 prices: _prices!,
+                                framePrices: _framePrices ?? const {},
+                                frames: _frames,
                               ),
                             ),
                           );
@@ -850,10 +840,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             });
                           }
                         },
-                        icon: const Icon(Icons.crop, color: AppColors.primary),
+                        icon: const Icon(Icons.crop, color: Colors.white),
                         label: const Text(
                           'Prévisualiser / Recadrer',
-                          style: TextStyle(color: AppColors.primary),
+                          style: TextStyle(color: Colors.white),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size(double.infinity, 50),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                         ),
                       ),
                       TextButton.icon(
@@ -893,8 +891,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     for (final imageUrl in _selectedImages) {
       final details = _photoDetails[imageUrl];
       if (details != null) {
-        final price = _prices?[details['size']] ?? 0;
-        total += price * (details['quantity'] as int);
+        total += OrderLinePricing.lineTotal(
+          details,
+          _prices!,
+          _framePrices ?? const {},
+        );
       }
     }
 
@@ -921,8 +922,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 _photoDetails[imageUrl] = {'size': '10x15 cm', 'quantity': 1};
               }
               final photoDetails = _photoDetails[imageUrl]!;
-              final price = _prices![photoDetails['size']] ?? 0;
-              final subtotal = price * (photoDetails['quantity'] as int);
+              final subtotal = OrderLinePricing.lineTotal(
+                photoDetails,
+                _prices!,
+                _framePrices ?? const {},
+              );
 
               return Card(
                 margin: const EdgeInsets.symmetric(vertical: 8.0),
@@ -940,8 +944,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           final dimension = photoDetails['size'] as String? ?? '10x15 cm';
                           Widget badge = const SizedBox.shrink();
                           if (snap.hasData) {
-                            final dpi = computeDpi(snap.data!, dimension);
-                            final q = qualityFromDpi(dpi);
+                            final analysis =
+                                analyzePrintFit(snap.data!, dimension);
+                            final q = analysis.quality;
                             badge = Positioned(
                               top: 2, right: 2,
                               child: Container(
@@ -997,8 +1002,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               builder: (ctx, snap) {
                                 if (!snap.hasData) return const SizedBox.shrink();
                                 final dim = photoDetails['size'] as String? ?? '10x15 cm';
-                                final dpi = computeDpi(snap.data!, dim);
-                                final q = qualityFromDpi(dpi);
+                                final analysis = analyzePrintFit(snap.data!, dim);
+                                final q = analysis.quality;
                                 return Padding(
                                   padding: const EdgeInsets.only(top: 4),
                                   child: Row(
@@ -1008,7 +1013,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                       const SizedBox(width: 4),
                                       Flexible( // Wrapped with Flexible to prevent overflow on small screens
                                         child: Text(
-                                          '${qualityLabel(q)} (${dpi.round()} DPI)',
+                                          '${qualityLabelForAnalysis(analysis)} (${analysis.dpi.round()} DPI)',
                                           style: TextStyle(
                                             fontSize: 10,
                                             color: qualityColor(q),
@@ -1255,14 +1260,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   /// Bannière de synthèse : combien de photos sont recommandées/acceptables/déconseillées
   Widget _buildQualitySummaryBanner(String dimension) {
-    final targetAspect = dimensionAspect(dimension);
     final images = _selectedImages.toList();
 
     return FutureBuilder<List<PrintQuality>>(
       future: Future.wait(images.map((url) async {
         final size = await _loadImageSizeLocal(url);
-        final keep = computeKeepFraction(size, targetAspect);
-        return qualityFromKeepFraction(keep);
+        final dim = _photoDetails[url]?['size'] as String? ?? dimension;
+        return analyzePrintFit(size, dim).quality;
       })),
       builder: (context, snap) {
         if (!snap.hasData) {
@@ -1632,24 +1636,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   return Stack(
                     fit: StackFit.expand,
                     children: [
-                      Image.network(
-                        fc.imageUrl.startsWith('/') 
-                            ? '${ApiService.rootUrl}${fc.imageUrl}' 
-                            : fc.imageUrl,
+                      AuthNetworkImage(
+                        fc.imageUrl,
                         fit: BoxFit.cover,
                         width: double.infinity,
-                        errorBuilder: (_, __, ___) => Image.asset(
+                        errorWidget: Image.asset(
                           'assets/carousel/mxx.jpeg',
                           fit: BoxFit.cover,
                         ),
-                        loadingBuilder: (_, child, progress) => progress == null
-                            ? child
-                            : Container(
-                                color: AppColors.primary.withOpacity(0.05),
-                                child: const Center(
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                ),
-                              ),
                       ),
                       // Gradient + titre en bas
                       Positioned(
@@ -1863,6 +1857,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     MaterialPageRoute(
                         builder: (context) => BookingScreen())),
                 delay: 300.ms,
+                hidden: true, // Masqué temporairement (conservé dans le code)
               );
             case 4:
               return _buildAnimatedQuickActionButton(
@@ -1873,6 +1868,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     MaterialPageRoute(
                         builder: (context) => BookingStatusScreen())),
                 delay: 400.ms,
+                hidden: true, // Masqué temporairement (conservé dans le code)
               );
             case 5:
               return _buildAnimatedQuickActionButton(
@@ -1905,8 +1901,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             decoration: BoxDecoration(
               gradient: const LinearGradient(
                 colors: [
-                  Color(0xFF2F5BFF),
-                  Color(0xFF4CA3FF),
+                  AppColors.primary,
+                  AppColors.primaryLight,
                 ],
                 begin: Alignment.centerLeft,
                 end: Alignment.centerRight,
@@ -1914,7 +1910,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               borderRadius: BorderRadius.circular(16),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.blue.withOpacity(0.25),
+                  color: AppColors.primary.withOpacity(0.25),
                   blurRadius: 14,
                   offset: const Offset(0, 6),
                 ),
@@ -1960,49 +1956,44 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     required String label,
     required VoidCallback onTap,
     required Duration delay,
+    bool hidden = false,
   }) {
-    return GestureDetector(
-      onTap: onTap,
+    final button = GestureDetector(
+      onTap: hidden ? null : onTap,
       child: Container(
         decoration: BoxDecoration(
-          color: AppColors.card.withOpacity(0.4), // Glassmorphic background
+          color: AppColors.card,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white.withOpacity(0.2)),
+          border: Border.all(color: AppColors.primary.withOpacity(0.08)),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.05),
+              color: Colors.black.withOpacity(0.06),
               blurRadius: 10,
               offset: const Offset(0, 5),
             ),
           ],
         ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(20),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5), // Inner blur
-            child: Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(icon, color: AppColors.primary, size: 36), // Larger icon
-                  const SizedBox(height: 8),
-                  Flexible(
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: Text(
-                        label,
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: AppColors.textPrimary,
-                              fontWeight: FontWeight.bold,
-                            ),
-                      ),
-                    ),
+        child: Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: AppColors.primary, size: 36),
+              const SizedBox(height: 8),
+              Flexible(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    label,
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.bold,
+                        ),
                   ),
-                ],
+                ),
               ),
-            ),
+            ],
           ),
         ),
       )
@@ -2010,6 +2001,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           .fade(delay: delay, duration: 400.ms)
           .slideY(begin: 0.1, curve: Curves.easeOut),
     );
+
+    if (hidden) {
+      return Opacity(
+        opacity: 0,
+        child: IgnorePointer(child: button),
+      );
+    }
+    return button;
   }
 
   Widget _buildHistorySection() {
@@ -2085,15 +2084,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       margin: const EdgeInsets.only(bottom: 8),
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(15),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-          child: Container(
+      child: Container(
             decoration: BoxDecoration(
-              color: AppColors.card.withOpacity(0.4),
+              color: AppColors.card,
               borderRadius: BorderRadius.circular(15),
-              border: Border.all(color: Colors.white.withOpacity(0.2)),
+              border: Border.all(color: AppColors.primary.withOpacity(0.08)),
             ),
             child: ListTile(
               contentPadding:
@@ -2132,8 +2127,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 }
               },
             ),
-          ),
-        ),
       ),
     )
         .animate()
@@ -2142,17 +2135,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildAdCarousel() {
-    final List<String> localImages = [
-      'assets/carousel/Ajouter un sous-titre.png',
-      'assets/carousel/car.jpg',
-      'assets/carousel/car1.jpg',
-      'assets/carousel/pflex.jpeg',
-      'assets/carousel/Pink Modern Pink October Instagram Post  (1).png',
-      'assets/carousel/Pink Modern Pink October Instagram Post  (2).png',
-      'assets/carousel/Pink Modern Pink October Instagram Post .png',
-      'assets/images/pro.png',
-    ];
-
     Widget buildItem(String path, bool isAsset) {
       return Container(
         width: double.infinity,
@@ -2178,50 +2160,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   fit: BoxFit.cover, // Ensures the image fills the container
                   width: double.infinity,
                   height: double.infinity)
-              : Image.network(path,
+              : AuthNetworkImage(
+                  path,
                   fit: BoxFit.cover,
                   width: double.infinity,
                   height: double.infinity,
-                  errorBuilder: (_, __, ___) => Image.asset(
+                  errorWidget: Image.asset(
                     'assets/carousel/mxx.jpeg',
                     fit: BoxFit.cover,
                     width: double.infinity,
                     height: double.infinity,
-                  )),
+                  ),
+                ),
         ),
       ).animate().fade(duration: 500.ms).slideX(
           begin: 0.1,
           curve: Curves.easeOut); // Apply simple fade and slide animation
     }
 
-    Widget buildLocalCarousel(String message) {
-      return Column(
-        children: [
-          CarouselSlider.builder(
-            itemCount: localImages.length,
-            itemBuilder: (context, index, realIndex) =>
-                buildItem(localImages[index], true),
-            options: CarouselOptions(
-                height: 260.0,
-                viewportFraction: 0.92, // Back to standard fraction
-                enlargeCenterPage: false,
-                autoPlay: true,
-                autoPlayInterval: const Duration(seconds: 4)),
-          ),
-          if (message.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Text(message,
-                  style: const TextStyle(color: AppColors.textSecondary)),
-            )
-        ],
-      );
-    }
-
-    return _isOffline
-        ? buildLocalCarousel(
-            "Impossible de charger les promotions. Mode hors-ligne.")
-        : FutureBuilder<List<Promotion>>(
+    return FutureBuilder<List<Promotion>>(
             future: _promotionsFuture,
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
@@ -2229,21 +2186,51 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     height: 140,
                     child: Center(child: CircularProgressIndicator()));
               }
-              if (snapshot.hasError ||
-                  !snapshot.hasData ||
-                  snapshot.data!.isEmpty) {
-                return buildLocalCarousel(
-                    "Impossible de charger les promotions en ligne.");
+              if (snapshot.hasError) {
+                debugPrint('Promotions carousel: ${snapshot.error}');
+                return Column(
+                  children: [
+                    SizedBox(
+                      height: 150,
+                      child: Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Text(
+                              'Promotions indisponibles',
+                              style: TextStyle(color: AppColors.textSecondary),
+                            ),
+                            const SizedBox(height: 8),
+                            TextButton(
+                              onPressed: () => setState(() {
+                                _promotionsFuture = ApiService.fetchPromotions();
+                              }),
+                              child: const Text('Réessayer'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              }
+              if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                return const SizedBox(
+                  height: 80,
+                  child: Center(
+                    child: Text(
+                      'Aucune promotion active pour le moment.',
+                      style: TextStyle(color: AppColors.textSecondary),
+                    ),
+                  ),
+                );
               }
               final onlinePromotions = snapshot.data!;
               return CarouselSlider.builder(
                 itemCount: onlinePromotions.length,
                 itemBuilder: (context, index, realIndex) {
                   final promo = onlinePromotions[index];
-                  // On gère l'URL de l'image (si relative au backend)
-                  final imageUrl = promo.imageUrl.startsWith('http')
-                      ? promo.imageUrl
-                      : '${ApiService.rootUrl}${promo.imageUrl}';
+                  final imageUrl = ApiService.getFullImageUrl(promo.imageUrl);
 
                   return GestureDetector(
                     onTap: () async {
@@ -2278,25 +2265,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: AppColors.primary, width: 2),
-          color: Colors.transparent, // Let BackdropFilter handle the background blur
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(20),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
-            child: Container(
-              color: Colors.white.withOpacity(0.3),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  _buildNavItem(Icons.home, 'Accueil', 0),
-                  _buildNavItem(Icons.shopping_cart, 'Commandes', 1),
-                  _buildNavItem(Icons.person, 'Profil', 2),
-                ],
-              ),
+          color: Colors.white,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
             ),
-          ),
+          ],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            _buildNavItem(Icons.home, 'Accueil', 0),
+            _buildNavItem(Icons.shopping_cart, 'Commandes', 1),
+            _buildNavItem(Icons.person, 'Profil', 2),
+          ],
         ),
       ),
     );
@@ -2604,29 +2589,9 @@ class _BatchPhotoTile extends StatelessWidget {
     required this.onRemove,
   });
 
-  Future<PrintQuality> _computeQuality() async {
-    final completer = Completer<Size>();
-    final ImageProvider provider = imageUrl.startsWith('http')
-        ? NetworkImage(imageUrl)
-        : FileImage(File(imageUrl)) as ImageProvider;
-    final stream = provider.resolve(const ImageConfiguration());
-    late ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (info, _) {
-        final size = Size(info.image.width.toDouble(), info.image.height.toDouble());
-        if (!completer.isCompleted) completer.complete(size);
-        stream.removeListener(listener);
-      },
-      onError: (_, __) {
-        if (!completer.isCompleted) completer.complete(const Size(1, 1));
-        stream.removeListener(listener);
-      },
-    );
-    stream.addListener(listener);
-    final size = await completer.future;
-    final aspect = dimensionAspect(dimension);
-    final keep = computeKeepFraction(size, aspect);
-    return qualityFromKeepFraction(keep);
+  Future<PrintFitAnalysis> _computeAnalysis() async {
+    final size = await getImageDimensions(imageUrl);
+    return analyzePrintFit(size, dimension);
   }
 
   @override
@@ -2657,8 +2622,8 @@ class _BatchPhotoTile extends StatelessWidget {
           ),
           Positioned(
             bottom: 4, left: 4,
-            child: FutureBuilder<PrintQuality>(
-              future: _computeQuality(),
+            child: FutureBuilder<PrintFitAnalysis>(
+              future: _computeAnalysis(),
               builder: (context, snap) {
                 if (!snap.hasData) {
                   return const SizedBox(
@@ -2666,9 +2631,10 @@ class _BatchPhotoTile extends StatelessWidget {
                     child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.white),
                   );
                 }
-                final q = snap.data!;
+                final analysis = snap.data!;
+                final q = analysis.quality;
                 return Tooltip(
-                  message: qualityLabel(q),
+                  message: qualityLabelForAnalysis(analysis),
                   child: Icon(qualityIcon(q), size: 18, color: qualityColor(q),
                       shadows: const [Shadow(color: Colors.black45, blurRadius: 4)]),
                 );

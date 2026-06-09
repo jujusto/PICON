@@ -23,6 +23,7 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscureText = true;
   bool _isLoading = false;
   bool _isLoginWithPhone = true;
+  String _selectedDialCode = '+228';
 
   Future<void> _login() async {
     if (_formKey.currentState?.validate() ?? false) {
@@ -34,7 +35,7 @@ class _LoginScreenState extends State<LoginScreen> {
         Map<String, dynamic> responseData;
         if (_isLoginWithPhone) {
           responseData = await ApiService.login(
-            phone: _phoneController.text,
+            phone: _buildFullPhoneNumber(_phoneController.text),
             password: _passwordController.text,
           );
         } else {
@@ -86,6 +87,24 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       }
     }
+  }
+
+  String _buildFullPhoneNumber(String rawPhone) {
+    var cleaned = rawPhone.trim().replaceAll(RegExp(r'[\s.\-()]'), '');
+    if (cleaned.startsWith('+')) {
+      return cleaned;
+    }
+    if (cleaned.startsWith('00')) {
+      return '+${cleaned.substring(2)}';
+    }
+    if (cleaned.startsWith('228') && cleaned.length >= 11) {
+      return '+$cleaned';
+    }
+    // 090123456 → enlever le 0 initial pour le Togo
+    if (cleaned.startsWith('0') && cleaned.length == 9) {
+      cleaned = cleaned.substring(1);
+    }
+    return '$_selectedDialCode$cleaned';
   }
 
   @override
@@ -184,7 +203,11 @@ class _LoginScreenState extends State<LoginScreen> {
                       decoration: _glassyInputDecoration(
                         'Numéro de téléphone',
                         prefix: CountryCodePicker(
-                          onChanged: (countryCode) {},
+                          onChanged: (countryCode) {
+                            setState(() {
+                              _selectedDialCode = countryCode.dialCode ?? '+228';
+                            });
+                          },
                           initialSelection: 'TG',
                           favorite: const ['+228', '+225', '+223'],
                           countryFilter: const [

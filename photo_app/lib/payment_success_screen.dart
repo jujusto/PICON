@@ -314,7 +314,7 @@ class PaymentSuccessScreen extends StatelessWidget {
                                 gradient: const LinearGradient(
                                   colors: [
                                     AppColors.primary,
-                                    Color(0xFF5C6BC0)
+                                    AppColors.primaryLight
                                   ],
                                   begin: Alignment.centerLeft,
                                   end: Alignment.centerRight,

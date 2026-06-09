@@ -3,62 +3,79 @@ import 'package:Picon/utils/geometric_background.dart';
 import 'package:flutter/material.dart';
 
 class NoConnectionScreen extends StatelessWidget {
-  const NoConnectionScreen({super.key});
+  final VoidCallback? onRetry;
+  final bool isRetrying;
+
+  const NoConnectionScreen({
+    super.key,
+    this.onRetry,
+    this.isRetrying = false,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
+    return Material(
+      color: AppColors.background,
+      child: Stack(
         children: [
-          GeometricBackground(),
+          const GeometricBackground(),
           Center(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 24),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(
-                  Icons.wifi_off,
-                  size: 100,
-                  color: AppColors.textSecondary,
-                ),
-                const SizedBox(height: 24),
-                const Text(
-                  'Pas de connexion Internet',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Veuillez vérifier votre connexion et réessayer.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 16,
+                children: [
+                  const Icon(
+                    Icons.wifi_off_rounded,
+                    size: 100,
                     color: AppColors.textSecondary,
                   ),
-                ),
-                const SizedBox(height: 32),
-                ElevatedButton.icon(
-                  onPressed: () {
-                    // This button could try to reconnect or navigate to an offline mode
-                    // For now, it just pops the screen
-                    if (Navigator.canPop(context)) {
-                      Navigator.pop(context);
-                    }
-                  },
-                  icon: const Icon(Icons.arrow_back),
-                  label: const Text('Mode hors ligne'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: AppColors.textOnPrimary,
+                  const SizedBox(height: 24),
+                  const Text(
+                    'Pas de connexion Internet',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary,
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Veuillez vérifier votre connexion réseau ou vos données mobiles, puis réessayez.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 16,
+                      height: 1.4,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  ElevatedButton.icon(
+                    onPressed: isRetrying ? null : onRetry,
+                    icon: isRetrying
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.refresh_rounded),
+                    label: Text(isRetrying ? 'Vérification…' : 'Réessayer'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: AppColors.textOnPrimary,
+                      minimumSize: const Size(200, 48),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
           ),
         ],
       ),

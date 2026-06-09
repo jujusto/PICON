@@ -1,6 +1,8 @@
 package com.studiophoto.photoappbackend.order;
 
 import com.studiophoto.photoappbackend.model.User;
+import com.studiophoto.photoappbackend.notification.UserNotificationService;
+import com.studiophoto.photoappbackend.payment.UssdCodeService;
 import com.studiophoto.photoappbackend.storage.StorageService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
@@ -18,6 +20,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -28,16 +31,22 @@ public class OrderController {
 
     private final OrderService orderService;
     private final StorageService storageService;
+    private final UserNotificationService userNotificationService;
+    private final UssdCodeService ussdCodeService;
 
     @PostMapping
-    public ResponseEntity<Order> createOrder(
+    public ResponseEntity<?> createOrder(
             @RequestBody CreateOrderRequest request,
             @AuthenticationPrincipal User currentUser) {
         if (currentUser == null) {
             return ResponseEntity.status(401).build(); // Non autorisé
         }
-        Order newOrder = orderService.createOrder(request, currentUser);
-        return ResponseEntity.ok(newOrder);
+        try {
+            Order newOrder = orderService.createOrder(request, currentUser);
+            return ResponseEntity.ok(newOrder);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
     }
 
     @GetMapping("/my-orders")
@@ -62,6 +71,27 @@ public class OrderController {
         return orderService.findById(id)
                 .filter(order -> order.getUser().getId().equals(currentUser.getId()))
                 .map(order -> ResponseEntity.ok(OrderResponseDTO.from(order)))
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Renvoie le code USSD marchand calculé pour une commande.
+     *
+     * Sécurité : endpoint authentifié + commande nécessairement détenue par
+     * l'utilisateur. Les codes marchands restent côté serveur ; seul le code
+     * final lié à cette commande (montant authoritatif serveur) est renvoyé.
+     */
+    @GetMapping("/{id}/ussd-code")
+    public ResponseEntity<?> getOrderUssdCode(
+            @PathVariable Long id,
+            @AuthenticationPrincipal User currentUser) {
+        if (currentUser == null) {
+            return ResponseEntity.status(401).build();
+        }
+        return orderService.findById(id)
+                .filter(order -> order.getUser().getId().equals(currentUser.getId()))
+                .<ResponseEntity<?>>map(order -> ResponseEntity.ok(
+                        Collections.singletonMap("ussdCode", ussdCodeService.resolveForOrder(order))))
                 .orElse(ResponseEntity.notFound().build());
     }
 
@@ -151,10 +181,104 @@ public class OrderController {
             orderService.cancelOrder(id, currentUser);
             return ResponseEntity.ok().build();
         } catch (IllegalStateException e) {
+            userNotificationService.notifyCancellationRefused(currentUser, id, e.getMessage());
             return ResponseEntity.badRequest().body(e.getMessage());
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Une erreur est survenue lors de l'annulation.");
+        }
+    }
+
+    @DeleteMapping("/{id}/pending-payment")
+    public ResponseEntity<?> deletePendingPaymentOrder(
+            @PathVariable Long id,
+            @AuthenticationPrincipal User currentUser) {
+        if (currentUser == null) {
+            return ResponseEntity.status(401).build();
+        }
+        try {
+            orderService.deletePendingPaymentOrderByCustomer(id, currentUser);
+            return ResponseEntity.noContent().build();
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(e.getMessage());
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Une erreur est survenue lors de la suppression.");
+        }
+    }
+
+    @PostMapping("/{id}/payment/confirm")
+    public ResponseEntity<?> confirmPaymentFromCustomer(
+            @PathVariable Long id,
+            @RequestBody(required = false) Map<String, String> payload,
+            @AuthenticationPrincipal User currentUser) {
+        if (currentUser == null) {
+            return ResponseEntity.status(401).build();
+        }
+        try {
+            String paymentReference = payload != null ? payload.get("paymentReference") : null;
+            String paymentProofType = payload != null ? payload.get("paymentProofType") : null;
+            String paymentProofText = payload != null ? payload.get("paymentProofText") : null;
+            String paymentProofImageUrl = payload != null ? payload.get("paymentProofImageUrl") : null;
+            Order order = orderService.markPaymentReportedByCustomer(
+                    id,
+                    currentUser,
+                    paymentReference,
+                    paymentProofType,
+                    paymentProofText,
+                    paymentProofImageUrl);
+            return ResponseEntity.ok(OrderResponseDTO.from(order));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @PostMapping("/{id}/payment-proof/upload")
+    public ResponseEntity<?> uploadPaymentProof(
+            @PathVariable Long id,
+            @RequestParam("file") MultipartFile file,
+            @AuthenticationPrincipal User currentUser) {
+        if (currentUser == null) {
+            return ResponseEntity.status(401).build();
+        }
+        if (file == null || file.isEmpty()) {
+            return ResponseEntity.badRequest().body("Fichier de preuve requis.");
+        }
+        try {
+            Order order = orderService.findById(id)
+                    .orElseThrow(() -> new IllegalArgumentException("Commande non trouvée."));
+            if (!order.getUser().getId().equals(currentUser.getId())) {
+                return ResponseEntity.status(403).body("Accès interdit.");
+            }
+
+            String originalFilename = file.getOriginalFilename();
+            if (originalFilename == null || originalFilename.isBlank()) {
+                originalFilename = "proof-image.jpg";
+            }
+            String sanitizedFilename = Paths.get(originalFilename).getFileName().toString();
+            String uploadId = UUID.randomUUID().toString();
+
+            Path proofDirectory = storageService.load("payment-proofs/user_" + currentUser.getId() + "/" + uploadId);
+            Files.createDirectories(proofDirectory);
+            Path destinationFile = proofDirectory.resolve(sanitizedFilename).normalize().toAbsolutePath();
+
+            if (!destinationFile.getParent().equals(proofDirectory.toAbsolutePath())) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("Chemin de fichier invalide.");
+            }
+
+            file.transferTo(destinationFile);
+            String fileUrl = "/uploads/payment-proofs/user_" + currentUser.getId() + "/" + uploadId + "/" + sanitizedFilename;
+            return ResponseEntity.ok(Collections.singletonMap("url", fileUrl));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Impossible d'uploader la preuve de paiement.");
         }
     }
 }

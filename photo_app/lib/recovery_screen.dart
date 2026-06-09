@@ -1,8 +1,10 @@
 import 'dart:ui';
 import 'package:Picon/api_service.dart';
+import 'package:Picon/models/contact_info.dart';
 import 'package:Picon/utils/colors.dart';
 import 'package:Picon/utils/geometric_background.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:pinput/pinput.dart';
 import 'package:country_code_picker/country_code_picker.dart';
@@ -22,6 +24,7 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
   final _pinController = TextEditingController();
   bool _isRecoveryWithEmail = true; // Changed from _isRecoveryWithName
   bool _isLoading = false;
+  String _selectedDialCode = '+228';
 
   Future<void> _recoverPassword() async {
     if (_formKey.currentState?.validate() ?? false) {
@@ -31,9 +34,9 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
 
       String identifier;
       if (_isRecoveryWithEmail) {
-        identifier = _emailController.text;
+        identifier = _emailController.text.trim();
       } else {
-        identifier = _phoneController.text;
+        identifier = _buildFullPhoneNumber(_phoneController.text);
       }
 
       try {
@@ -67,6 +70,14 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
     }
   }
 
+  String _buildFullPhoneNumber(String rawPhone) {
+    final cleaned = rawPhone.trim().replaceAll(RegExp(r'\s+'), '');
+    if (cleaned.startsWith('+')) {
+      return cleaned;
+    }
+    return '$_selectedDialCode$cleaned';
+  }
+
   void _showNewPasswordDialog(String resetToken) {
     showDialog(
       context: context,
@@ -78,28 +89,152 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
   void _showContactAdminPopup() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Contacter l\'administrateur'),
-        content: const Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Pour réinitialiser votre code secret, veuillez contacter l\'administrateur via :'),
-            SizedBox(height: 16),
-            Text('Email: admin@example.com'),
-            SizedBox(height: 8),
-            Text('Tél: +228 90 00 00 00 / +225 01 02 03 04'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Fermer'),
+      builder: (context) => Dialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: FutureBuilder<ContactInfo>(
+            future: ApiService.fetchContactInfo(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const SizedBox(
+                  height: 180,
+                  child: Center(
+                    child: CircularProgressIndicator(color: AppColors.primary),
+                  ),
+                );
+              }
+
+              if (snapshot.hasError || !snapshot.hasData) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Contacter l\'administrateur',
+                      style: TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    const Text(
+                      'Impossible de charger les coordonnées depuis le serveur pour le moment.',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: AppColors.textSecondary,
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('Fermer'),
+                      ),
+                    ),
+                  ],
+                );
+              }
+
+              final contactInfo = snapshot.data!;
+              final phoneNumbers = _extractPhoneNumbers(contactInfo.phoneNumber);
+              final email = contactInfo.email.trim();
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Contacter l\'administrateur',
+                    style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Pour réinitialiser votre code secret, contactez l\'administrateur :',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: AppColors.textSecondary,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  if (email.isNotEmpty)
+                    _ContactActionTile(
+                      icon: Icons.email_outlined,
+                      title: 'Envoyer un email',
+                      value: email,
+                      onTap: () => _launchContactUri(
+                        context: context,
+                        uri: Uri(
+                          scheme: 'mailto',
+                          path: email,
+                        ),
+                      ),
+                    ),
+                  if (phoneNumbers.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    ...phoneNumbers.map(
+                      (phone) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: _ContactActionTile(
+                          icon: Icons.phone_outlined,
+                          title: 'Appeler',
+                          value: phone,
+                          onTap: () => _launchContactUri(
+                            context: context,
+                            uri: Uri(
+                              scheme: 'tel',
+                              path: phone.replaceAll(' ', ''),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('Fermer'),
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
-        ],
+        ),
       ),
     );
+  }
+
+  List<String> _extractPhoneNumbers(String rawValue) {
+    return rawValue
+        .split(RegExp(r'[/,;\n]'))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .toList();
+  }
+
+  Future<void> _launchContactUri({
+    required BuildContext context,
+    required Uri uri,
+  }) async {
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Impossible d\'ouvrir ${uri.toString()}')),
+      );
+    }
   }
 
   @override
@@ -231,7 +366,11 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
                       decoration: _glassyInputDecoration(
                         'Numéro de téléphone',
                         prefix: CountryCodePicker(
-                          onChanged: (countryCode) {},
+                          onChanged: (countryCode) {
+                            setState(() {
+                              _selectedDialCode = countryCode.dialCode ?? '+228';
+                            });
+                          },
                           initialSelection: 'TG',
                           favorite: const ['+228', '+225', '+223'],
                           countryFilter: const ['DZ', 'AO', 'BJ', 'BW', 'BF', 'BI', 'CM', 'CV', 'CF', 'TD', 'KM', 'CG', 'CD', 'CI', 'DJ', 'EG', 'GQ', 'ER', 'ET', 'GA', 'GM', 'GH', 'GN', 'GW', 'KE', 'LS', 'LR', 'LY', 'MG', 'MW', 'ML', 'MR', 'MU', 'YT', 'MA', 'MZ', 'NA', 'NE', 'NG', 'RE', 'RW', 'SH', 'ST', 'SN', 'SC', 'SL', 'SO', 'ZA', 'SS', 'SD', 'SZ', 'TZ', 'TG', 'TN', 'UG', 'EH', 'ZM', 'ZW'],
@@ -246,12 +385,13 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
                   const SizedBox(height: 16),
                   Pinput(
                     controller: _pinController,
-                    length: 6,
+                    length: 4,
+                    keyboardType: TextInputType.number,
                     defaultPinTheme: defaultPinTheme,
                     focusedPinTheme: defaultPinTheme.copyWith(
                       decoration: defaultPinTheme.decoration!.copyWith(border: Border.all(color: AppColors.primary)),
                     ),
-                    validator: (s) => (s?.length ?? 0) < 6 ? 'Code secret invalide' : null,
+                    validator: (s) => RegExp(r'^\d{4}$').hasMatch(s ?? '') ? null : 'Code secret invalide (4 chiffres)',
                   ),
                   const SizedBox(height: 16),
                   Align(
@@ -374,6 +514,79 @@ class _NewPasswordDialog extends StatefulWidget {
 
   @override
   State<_NewPasswordDialog> createState() => _NewPasswordDialogState();
+}
+
+class _ContactActionTile extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String value;
+  final VoidCallback onTap;
+
+  const _ContactActionTile({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.primary.withOpacity(0.06),
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.16),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, size: 20, color: AppColors.primary),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      value,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.arrow_outward_rounded,
+                size: 18,
+                color: AppColors.textSecondary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _NewPasswordDialogState extends State<_NewPasswordDialog> {

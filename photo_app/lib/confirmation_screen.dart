@@ -1,66 +1,579 @@
-import 'package:flutter/material.dart';
-import 'utils/colors.dart';
+import 'dart:io';
 
-class ConfirmationScreen extends StatelessWidget {
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'history_screen.dart';
+import 'api_service.dart';
+import 'services/ussd_launch_service.dart';
+import 'utils/colors.dart';
+import 'utils/mobile_operator_utils.dart';
+import 'utils/phone_payment_permissions.dart';
+
+class ConfirmationScreen extends StatefulWidget {
   final Map<String, Map<String, dynamic>> orderDetails;
   final String paymentMethod;
+  final double totalAmount;
+  final int orderId;
+  final bool launchUssdOnOpen;
+  final bool isExpress;
+  final String? paymentPhone;
+  final String customerCountry;
 
   const ConfirmationScreen({
     super.key,
     required this.orderDetails,
     required this.paymentMethod,
+    required this.totalAmount,
+    required this.orderId,
+    this.launchUssdOnOpen = false,
+    this.isExpress = false,
+    this.paymentPhone,
+    this.customerCountry = 'TG',
   });
 
   @override
+  State<ConfirmationScreen> createState() => _ConfirmationScreenState();
+}
+
+class _ConfirmationScreenState extends State<ConfirmationScreen> {
+  bool _isConfirmingPayment = false;
+  bool _isUploadingProof = false;
+  bool _autoUssdLaunched = false;
+  final TextEditingController _referenceController = TextEditingController();
+  final TextEditingController _messageController = TextEditingController();
+  File? _proofImage;
+
+  String get _amount => widget.totalAmount.toStringAsFixed(0);
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.launchUssdOnOpen) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_autoUssdLaunched) {
+          _autoUssdLaunched = true;
+          _launchUssd();
+        }
+      });
+    }
+  }
+
+  Future<void> _launchUssd() async {
+
+    final phone = widget.paymentPhone?.trim().isNotEmpty == true
+        ? widget.paymentPhone!
+        : (ApiService.userPhone ?? '');
+    final detected = MobileOperatorUtils.detectOperator(
+      phone,
+      country: widget.customerCountry,
+    );
+    final operatorHint = detected != MobileOperator.unknown
+        ? MobileOperatorUtils.operatorHintForUssd(detected)
+        : MobileOperatorUtils.operatorHintFromPaymentMethod(
+            widget.paymentMethod,
+          );
+
+    // Le code USSD marchand est résolu côté serveur (jamais embarqué dans l'app).
+    String ussdCode;
+    try {
+      ussdCode = await ApiService.fetchOrderUssdCode(widget.orderId);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Impossible de récupérer le code de paiement. Vérifiez votre connexion et réessayez.',
+          ),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+
+    final result = await UssdLaunchService.launchPaymentUssd(
+      ussdCode: ussdCode,
+      paymentPhone: phone,
+      operatorHint: operatorHint,
+    );
+
+    if (!mounted) return;
+
+    if (result.permissionDenied && !result.success) {
+      final retry = await PhonePaymentPermissions.showDeniedDialog(context);
+      if (retry && mounted) {
+        await _launchUssd();
+        return;
+      }
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result.message),
+        backgroundColor: result.success
+            ? (result.permissionDenied
+                ? const Color(0xFFE65100)
+                : const Color(0xFF2E7D32))
+            : Colors.red,
+        duration: Duration(seconds: result.permissionDenied ? 6 : 4),
+        action: result.permissionDenied && !result.success
+            ? SnackBarAction(
+                label: 'Paramètres',
+                textColor: Colors.white,
+                onPressed: PhonePaymentPermissions.openSettings,
+              )
+            : null,
+      ),
+    );
+  }
+
+  Future<void> _notifyPaymentDone() async {
+    if (_isConfirmingPayment) return;
+
+    if (_proofImage == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('La capture d\'écran est obligatoire pour confirmer le paiement.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isConfirmingPayment = true);
+    try {
+      setState(() => _isUploadingProof = true);
+      final paymentProofImageUrl =
+          await ApiService.uploadPaymentProof(widget.orderId, _proofImage!);
+
+      String? paymentProofText;
+      if (_messageController.text.trim().isNotEmpty) {
+        paymentProofText = _messageController.text.trim();
+      }
+
+      await ApiService.confirmOrderPayment(
+        widget.orderId,
+        paymentReference: _referenceController.text.trim().isEmpty
+            ? null
+            : _referenceController.text.trim(),
+        paymentProofType: 'SCREENSHOT',
+        paymentProofText: paymentProofText,
+        paymentProofImageUrl: paymentProofImageUrl,
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Confirmation reçue. Paiement en cours de validation par nos équipes.',
+          ),
+          backgroundColor: Colors.green,
+        ),
+      );
+
+      // Redirige vers WhatsApp avec le récapitulatif complet de la commande.
+      await _sendWhatsAppRecap();
+      if (!mounted) return;
+
+      _goToHistory();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Impossible de confirmer le paiement: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isUploadingProof = false;
+          _isConfirmingPayment = false;
+        });
+      }
+    }
+  }
+
+  /// Construit le récapitulatif de la commande et ouvre WhatsApp (redirection)
+  /// avec un message pré-rempli destiné au studio.
+  Future<void> _sendWhatsAppRecap() async {
+    // Numéro WhatsApp par défaut de Picon si rien n'est configuré côté admin.
+    const defaultWhatsapp = '+228 98 52 62 26';
+
+    try {
+      String rawWhatsapp = defaultWhatsapp;
+      try {
+        final contact = await ApiService.fetchContactInfo();
+        final configured = contact.whatsappNumber?.trim();
+        if (configured != null && configured.isNotEmpty) {
+          rawWhatsapp = configured;
+        } else if (contact.phoneNumber.trim().isNotEmpty) {
+          // Repli secondaire : numéro de téléphone du studio.
+          rawWhatsapp = contact.phoneNumber;
+        }
+      } catch (_) {
+        // En cas d'échec de récupération, on garde le numéro par défaut.
+      }
+
+      // Numéro WhatsApp du studio : on ne garde que les chiffres (code pays inclus).
+      final studioPhone = rawWhatsapp.replaceAll(RegExp(r'\D'), '');
+
+      final now = DateTime.now();
+      String two(int n) => n.toString().padLeft(2, '0');
+      final dateStr =
+          '${two(now.day)}/${two(now.month)}/${now.year} ${two(now.hour)}:${two(now.minute)}';
+
+      final clientName =
+          '${ApiService.userName ?? ''} ${ApiService.userLastName ?? ''}'.trim();
+      final clientPhone = (widget.paymentPhone?.trim().isNotEmpty == true)
+          ? widget.paymentPhone!.trim()
+          : (ApiService.userPhone ?? ApiService.userEmail ?? 'Non renseigné');
+
+      int totalQuantity = 0;
+
+      final buffer = StringBuffer();
+      buffer.writeln('🎉 *Nouvelle commande - Picon* 🎉');
+      buffer.writeln('━━━━━━━━━━━━━━━━━━━');
+      buffer.writeln('*Commande:* #${widget.orderId}');
+      buffer.writeln('*Date:* $dateStr');
+      buffer.writeln('*Client:* ${clientName.isEmpty ? 'Client' : clientName}');
+      buffer.writeln('*Téléphone:* $clientPhone');
+      buffer.writeln('*Type:* ${widget.isExpress ? 'Express (prioritaire)' : 'Standard'}');
+      buffer.writeln('*Moyen de paiement:* ${widget.paymentMethod}');
+      buffer.writeln('━━━━━━━━━━━━━━━━━━━');
+      buffer.writeln('*Détails de la commande:*');
+
+      widget.orderDetails.forEach((imageUrl, details) {
+        final size = details['size'] ?? '-';
+        final quantity = (details['quantity'] as num?)?.toInt() ?? 1;
+        totalQuantity += quantity;
+        final withFrame = details['withFrame'] == true;
+        final frameName = details['frameName'];
+        final frameInfo = withFrame
+            ? ' + cadre${frameName != null ? ' ($frameName)' : ''}'
+            : '';
+        buffer.writeln('• $size x$quantity$frameInfo');
+      });
+
+      buffer.writeln('━━━━━━━━━━━━━━━━━━━');
+      buffer.writeln('*Quantité totale:* $totalQuantity photo(s)');
+      buffer.writeln('*Coût total:* ${widget.totalAmount.toStringAsFixed(0)} FCFA');
+      buffer.writeln('━━━━━━━━━━━━━━━━━━━');
+      buffer.writeln('Merci de traiter cette commande. 🙏');
+
+      final message = Uri.encodeComponent(buffer.toString());
+
+      final whatsappAppUrl =
+          Uri.parse('whatsapp://send?phone=$studioPhone&text=$message');
+      final whatsappWebUrl =
+          Uri.parse('https://wa.me/$studioPhone?text=$message');
+
+      if (await canLaunchUrl(whatsappAppUrl)) {
+        await launchUrl(whatsappAppUrl, mode: LaunchMode.externalApplication);
+      } else {
+        // Android 11+ peut bloquer canLaunchUrl sans <queries> : fallback web.
+        await launchUrl(whatsappWebUrl, mode: LaunchMode.externalApplication);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Impossible d\'ouvrir WhatsApp : $e'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _pickProofImage() async {
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 80,
+      maxWidth: 1600,
+    );
+    if (picked == null) return;
+    setState(() => _proofImage = File(picked.path));
+  }
+
+  @override
+  void dispose() {
+    _referenceController.dispose();
+    _messageController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    const highlight = TextStyle(
+      fontWeight: FontWeight.w700,
+      color: Colors.deepOrange,
+    );
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Commande Reçue'),
+        title: const Text('Finaliser le paiement'),
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.textOnPrimary,
-        automaticallyImplyLeading: false, // Prevent back button
+        automaticallyImplyLeading: false,
       ),
       body: Container(
         color: AppColors.background,
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Center(
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.check_circle, color: AppColors.accent, size: 100),
-              const SizedBox(height: 30),
-              const Text(
-                'Merci ! Votre commande a bien été reçue.',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
-                textAlign: TextAlign.center,
-              ),
+              const Icon(Icons.check_circle, color: AppColors.accent, size: 72),
               const SizedBox(height: 12),
               const Text(
-                'Elle a été transmise à nos équipes via WhatsApp et sera traitée dans les plus brefs délais.',
-                style: TextStyle(fontSize: 16, color: AppColors.textSecondary),
+                'Commande enregistrée',
                 textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 30),
-              ElevatedButton(
-                onPressed: () {
-                  // Navigate back to the booking/home screen
-                  Navigator.of(context).popUntil((route) => route.isFirst);
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 16),
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
                 ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Paiement via ${widget.paymentMethod} — $_amount FCFA',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: AppColors.textSecondary),
+              ),
+              if (widget.paymentPhone != null &&
+                  widget.paymentPhone!.trim().isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'Ligne Mobile Money : ${widget.paymentPhone}',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppColors.primary.withValues(alpha: 0.9),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 8),
+              Text(
+                'Une fenêtre USSD va s\'ouvrir sur cette ligne : confirmez le paiement marchand et saisissez votre code secret Mobile Money (comme sur 1xBet).',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey.shade700,
+                  height: 1.35,
+                ),
+              ),
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppColors.primary.withValues(alpha: 0.15)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Étapes après paiement',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    _PaymentStepRow(
+                      number: 1,
+                      child: Text.rich(
+                        TextSpan(
+                          children: [
+                            const TextSpan(text: 'Validez le '),
+                            TextSpan(text: 'pop-up USSD', style: highlight),
+                            const TextSpan(
+                              text: ' avec votre code Mobile Money, puis capturez l\'écran de confirmation',
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    _PaymentStepRow(
+                      number: 2,
+                      child: Text.rich(
+                        TextSpan(
+                          children: [
+                            const TextSpan(text: 'Chargez la '),
+                            TextSpan(text: 'capture', style: highlight),
+                            const TextSpan(text: ' ci-dessous'),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    _PaymentStepRow(
+                      number: 3,
+                      child: Text.rich(
+                        TextSpan(
+                          children: [
+                            const TextSpan(text: 'Validez et '),
+                            TextSpan(text: 'attendez', style: highlight),
+                            const TextSpan(text: ' notre confirmation'),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton.icon(
+                onPressed: _launchUssd,
+                icon: const Icon(Icons.phone_in_talk),
+                label: const Text('Relancer le paiement USSD'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.primary,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Capture d\'écran *',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text.rich(
+                TextSpan(
+                  style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                  children: [
+                    const TextSpan(text: 'Obligatoire — faites une '),
+                    TextSpan(text: 'capture', style: highlight),
+                    const TextSpan(text: ' après le paiement USSD'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: _pickProofImage,
+                icon: const Icon(Icons.photo_library_outlined),
+                label: Text(
+                  _proofImage == null
+                      ? 'Choisir la capture'
+                      : 'Changer la capture',
+                ),
+              ),
+              if (_proofImage != null) ...[
+                const SizedBox(height: 10),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.file(
+                    _proofImage!,
+                    height: 160,
+                    width: double.infinity,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 20),
+              TextField(
+                controller: _referenceController,
+                decoration: const InputDecoration(
+                  labelText: 'Référence transaction (optionnel)',
+                  hintText: 'Ex: TX123456789',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _messageController,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: 'Coller un message (optionnel)',
+                  hintText: 'SMS ou message reçu après paiement',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: _isConfirmingPayment ? null : _notifyPaymentDone,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+                icon: _isConfirmingPayment
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.check_circle_outline),
+                label: Text(
+                  _isUploadingProof
+                      ? 'Envoi de la capture...'
+                      : 'J\'ai effectué le paiement',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: _goToHistory,
                 child: const Text('Retour à l\'accueil'),
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  void _goToHistory() {
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const HistoryScreen()),
+      (route) => route.isFirst,
+    );
+  }
+}
+
+class _PaymentStepRow extends StatelessWidget {
+  final int number;
+  final Widget child;
+
+  const _PaymentStepRow({
+    required this.number,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        CircleAvatar(
+          radius: 13,
+          backgroundColor: AppColors.primary,
+          child: Text(
+            '$number',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
             ),
           ),
         ),
-      ),
+        const SizedBox(width: 10),
+        Expanded(child: child),
+      ],
     );
   }
 }

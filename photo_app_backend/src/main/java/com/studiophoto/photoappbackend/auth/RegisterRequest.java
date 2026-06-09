@@ -2,6 +2,7 @@ package com.studiophoto.photoappbackend.auth;
 
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -17,7 +18,6 @@ public class RegisterRequest {
     @NotBlank(message = "Le prénom est obligatoire")
     private String firstname;
 
-    @NotBlank(message = "Le nom est obligatoire")
     private String lastname;
 
     @NotBlank(message = "L'email est obligatoire")
@@ -32,6 +32,7 @@ public class RegisterRequest {
     private String phone;
 
     @NotBlank(message = "Le code PIN est obligatoire")
-    @Size(min = 6, max = 6, message = "Le code PIN doit contenir exactement 6 chiffres")
+    @Size(min = 4, max = 4, message = "Le code PIN doit contenir exactement 4 chiffres")
+    @Pattern(regexp = "\\d{4}", message = "Le code PIN doit contenir uniquement 4 chiffres")
     private String pin;
 }

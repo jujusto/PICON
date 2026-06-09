@@ -10,7 +10,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
+import java.math.BigDecimal;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -71,6 +73,18 @@ public class AdminOrderController {
         return "redirect:/admin/orders";
     }
 
+    @GetMapping("/{id}/confirm-payment")
+    public String confirmPayment(@PathVariable("id") Long id, RedirectAttributes redirectAttributes) {
+        try {
+            orderService.updateOrderStatusAndPaymentMethod(id, OrderStatus.PROCESSING, null);
+            redirectAttributes.addFlashAttribute("successMessage",
+                    "Paiement validé pour la commande #" + id + ".");
+        } catch (IllegalArgumentException e) {
+            redirectAttributes.addFlashAttribute("errorMessage", e.getMessage());
+        }
+        return "redirect:/admin/orders";
+    }
+
     @GetMapping("/{id}/cancel")
     public String cancelOrder(@PathVariable("id") Long id, RedirectAttributes redirectAttributes) {
         try {
@@ -92,6 +106,38 @@ public class AdminOrderController {
             redirectAttributes.addFlashAttribute("errorMessage", e.getMessage());
         }
         return "redirect:/admin/orders";
+    }
+
+    @PostMapping("/{id}/initiate-refund")
+    public String initiateRefund(
+            @PathVariable("id") Long id,
+            @RequestParam(value = "refundAmount", required = false) BigDecimal refundAmount,
+            @RequestParam(value = "refundReason", required = false) String refundReason,
+            RedirectAttributes redirectAttributes) {
+        try {
+            orderService.initiateRefund(id, refundAmount, refundReason);
+            redirectAttributes.addFlashAttribute("successMessage",
+                    "Remboursement initié pour la commande #" + id
+                            + ". Effectuez le transfert USSD puis confirmez avec la référence.");
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            redirectAttributes.addFlashAttribute("errorMessage", e.getMessage());
+        }
+        return "redirect:/admin/orders/" + id;
+    }
+
+    @PostMapping("/{id}/confirm-refund")
+    public String confirmRefund(
+            @PathVariable("id") Long id,
+            @RequestParam("refundReference") String refundReference,
+            RedirectAttributes redirectAttributes) {
+        try {
+            orderService.confirmRefund(id, refundReference);
+            redirectAttributes.addFlashAttribute("successMessage",
+                    "Remboursement confirmé pour la commande #" + id + ".");
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            redirectAttributes.addFlashAttribute("errorMessage", e.getMessage());
+        }
+        return "redirect:/admin/orders/" + id;
     }
 
     @GetMapping("/{id}/delete")

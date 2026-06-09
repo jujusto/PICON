@@ -46,14 +46,11 @@ dependencies:
   country_code_picker: ^3.4.1
   video_player: ^2.8.6
   url_launcher: ^6.3.2
-  webview_flutter: ^4.8.0
   font_awesome_flutter: ^10.7.0
   printing: ^5.14.2
   uuid: ^4.5.2
   barcode_widget: ^2.0.4
   google_fonts: ^6.3.2
-  feda_flutter: ^0.0.1 
-  app_links: ^6.3.0
   stomp_dart_client: ^2.0.0
   image_size_getter: ^2.2.0
   flutter_image_compress: ^2.3.0

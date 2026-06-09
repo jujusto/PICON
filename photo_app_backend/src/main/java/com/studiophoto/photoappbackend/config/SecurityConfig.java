@@ -17,6 +17,7 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 
 import java.util.Arrays;
@@ -38,22 +39,21 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf
                         .ignoringRequestMatchers(
                                 new AntPathRequestMatcher("/api/**"),
-                                new AntPathRequestMatcher("/payment/**"),
-                                new AntPathRequestMatcher("/api/payments/fedapay/webhook"),
                                 new AntPathRequestMatcher("/actuator/**")
                         )
                 )
                 .authorizeHttpRequests(auth -> auth
                         // Public access for static resources
                         .requestMatchers("/static/**", "/css/**", "/js/**", "/images/**").permitAll()
-                        // Uploads should ideally be authenticated, but if needed for mobile <img> tags:
-                        // .requestMatchers("/uploads/**").permitAll() // Security by obscurity (UUIDs)
-                        .requestMatchers("/uploads/**").authenticated()
+                        // Photos commandes / preuves de paiement : accès authentifié uniquement
+                        .requestMatchers("/uploads/user_*/**").authenticated()
+                        .requestMatchers("/uploads/payment-proofs/**").authenticated()
+                        // Bannières promo, formats, etc. (fichiers à la racine /uploads/) : lecture publique
+                        .requestMatchers(HttpMethod.GET, "/uploads/**").permitAll()
+                        .requestMatchers(HttpMethod.HEAD, "/uploads/**").permitAll()
                         
                         // Public access for new public endpoints
                         .requestMatchers("/api/public/**", "/api/promotions/**", "/api/featured-content/**").permitAll()
-                        .requestMatchers("/payment/**").permitAll()
-                        .requestMatchers("/api/payments/fedapay/webhook").permitAll()
                         
                         // Public access for authentication and admin login page
                         .requestMatchers("/api/auth/**").permitAll()

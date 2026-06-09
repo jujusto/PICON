@@ -285,7 +285,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen> {
       case 'CANCELLED':
         return {'text': 'Annulée', 'color': Colors.red.shade700, 'icon': Icons.cancel};
       case 'COMPLETED':
-        return {'text': 'Terminée', 'color': Colors.blue.shade700, 'icon': Icons.task_alt};
+        return {'text': 'Terminée', 'color': AppColors.primary, 'icon': Icons.task_alt};
       default:
         return {'text': status, 'color': Colors.grey.shade700, 'icon': Icons.help_outline};
     }

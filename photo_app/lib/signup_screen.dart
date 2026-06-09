@@ -25,6 +25,7 @@ class _SignupScreenState extends State<SignupScreen> {
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
   bool _isLoading = false;
+  String _selectedDialCode = '+228';
 
   Future<void> _signup() async {
     if (_formKey.currentState?.validate() ?? false) {
@@ -35,12 +36,29 @@ class _SignupScreenState extends State<SignupScreen> {
           return _PinCreationSheet(
             name: _nameController.text,
             email: _emailController.text,
-            phone: _phoneController.text, // Make sure you have a phone controller
+            phone: _buildFullPhoneNumber(_phoneController.text),
             password: _passwordController.text,
           );
         },
       );
     }
+  }
+
+  String _buildFullPhoneNumber(String rawPhone) {
+    var cleaned = rawPhone.trim().replaceAll(RegExp(r'[\s.\-()]'), '');
+    if (cleaned.startsWith('+')) {
+      return cleaned;
+    }
+    if (cleaned.startsWith('00')) {
+      return '+${cleaned.substring(2)}';
+    }
+    if (cleaned.startsWith('228') && cleaned.length >= 11) {
+      return '+$cleaned';
+    }
+    if (cleaned.startsWith('0') && cleaned.length == 9) {
+      cleaned = cleaned.substring(1);
+    }
+    return '$_selectedDialCode$cleaned';
   }
 
   @override
@@ -140,7 +158,11 @@ class _SignupScreenState extends State<SignupScreen> {
                     decoration: _glassyInputDecoration(
                       'Numéro de téléphone',
                       prefix: CountryCodePicker(
-                        onChanged: (countryCode) {},
+                        onChanged: (countryCode) {
+                          setState(() {
+                            _selectedDialCode = countryCode.dialCode ?? '+228';
+                          });
+                        },
                         initialSelection: 'TG',
                         favorite: const ['+228', '+225', '+223'],
                         countryFilter: const [
@@ -390,9 +412,9 @@ class _PinCreationSheetState extends State<_PinCreationSheet> {
   bool _isLoading = false; // Add a loading state
 
   Future<void> _validatePin() async {
-    if (_pinController.text.length != 6) {
+    if (!RegExp(r'^\d{4}$').hasMatch(_pinController.text)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Veuillez entrer un code PIN à 6 chiffres.'), backgroundColor: Colors.orange),
+        const SnackBar(content: Text('Veuillez entrer un code secret à 4 chiffres.'), backgroundColor: Colors.orange),
       );
       return;
     }
@@ -481,11 +503,18 @@ class _PinCreationSheetState extends State<_PinCreationSheet> {
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
                   ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Utilisez 4 chiffres uniquement.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                  ),
                   const SizedBox(height: 24),
                   Pinput(
-                    length: 6,
+                    length: 4,
                     controller: _pinController,
                     focusNode: _pinFocusNode,
+                    keyboardType: TextInputType.number,
                     defaultPinTheme: PinTheme(
                       width: MediaQuery.of(context).size.width < 360 ? 40 : 56,
                       height: MediaQuery.of(context).size.width < 360 ? 40 : 56,

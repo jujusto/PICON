@@ -25,13 +25,7 @@ class AuthNetworkImage extends StatelessWidget {
     this.loadingWidget,
   });
 
-  static Map<String, String> get _authHeaders {
-    final headers = <String, String>{};
-    if (ApiService.authToken != null) {
-      headers['Authorization'] = 'Bearer ${ApiService.authToken}';
-    }
-    return headers;
-  }
+  static Map<String, String> get _authHeaders => ApiService.imageAuthHeaders;
 
   @override
   Widget build(BuildContext context) {

@@ -95,23 +95,12 @@ class _PricingScreenState extends State<PricingScreen> {
   Widget _buildGridView(List<PhotoFormat> prices, {bool isOffline = false}) {
     final currencyFormatter = NumberFormat.currency(locale: 'fr_FR', symbol: 'FCFA', decimalDigits: 0);
 
-    // Fonction rudimentaire pour vérifier si c'est un cadre (>= 20x25)
-    bool isFramed(String dim) {
-      if (dim.contains('20x25') || dim.contains('20 x 25')) return true;
-      if (dim.contains('20x30') || dim.contains('30x40') || dim.contains('40x60') || dim.contains('50x70') || dim.contains('60x80') || dim.contains('60x90') || dim.contains('A4') || dim.contains('A3')) return true;
-      
-      // Essayer d'extraire la première largeur pour une comparaison numérique si format NxM
-      final regex = RegExp(r'^(\d+)[xX]');
-      final match = regex.firstMatch(dim);
-      if (match != null) {
-        final width = int.tryParse(match.group(1) ?? '0') ?? 0;
-        if (width >= 20) return true;
-      }
-      return false;
-    }
-
-    final standardPrints = prices.where((p) => !isFramed(p.dimension)).toList();
-    final framedPrints = prices.where((p) => isFramed(p.dimension)).toList();
+    final standardPrints = prices
+        .where((p) => p.framePrice == null || p.framePrice! <= 0)
+        .toList();
+    final framedPrints = prices
+        .where((p) => p.framePrice != null && p.framePrice! > 0)
+        .toList();
 
     return Column(
       children: [
@@ -181,7 +170,7 @@ class _PricingScreenState extends State<PricingScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'À partir du format 20x25 cm, les photos sont livrées directement avec un cadre photo.',
+                          'Ces formats proposent un cadre en option. Le prix affiché est le tirage ; le cadre s\'ajoute selon le format.',
                           style: TextStyle(
                             fontSize: 14,
                             color: AppColors.textSecondary.withOpacity(0.8),
@@ -207,6 +196,9 @@ class _PricingScreenState extends State<PricingScreen> {
                         return _PriceTile(
                           dimension: item.dimension,
                           price: currencyFormatter.format(item.price),
+                          framePrice: item.framePrice != null
+                              ? currencyFormatter.format(item.framePrice)
+                              : null,
                           isFramed: true,
                         );
                       },
@@ -227,11 +219,13 @@ class _PricingScreenState extends State<PricingScreen> {
 class _PriceTile extends StatelessWidget {
   final String dimension;
   final String price;
+  final String? framePrice;
   final bool isFramed;
 
   const _PriceTile({
     required this.dimension,
     required this.price,
+    this.framePrice,
     this.isFramed = false,
   });
 
@@ -283,6 +277,21 @@ class _PriceTile extends StatelessWidget {
                   ),
                 ),
               ),
+              if (framePrice != null) ...[
+                const SizedBox(height: 4),
+                Flexible(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      'Cadre $framePrice',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary.withOpacity(0.9),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
