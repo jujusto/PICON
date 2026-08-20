@@ -59,6 +59,8 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/**").permitAll()
                         .requestMatchers("/admin/login").permitAll()
                         .requestMatchers("/error").permitAll()
+                        // Politique de confidentialité (Play Store)
+                        .requestMatchers(HttpMethod.GET, "/privacy", "/politique-de-confidentialite").permitAll()
                         
                         // Admin paths should be authenticated and role-based
                         .requestMatchers("/admin/**").hasRole("ADMIN")

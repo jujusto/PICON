@@ -1495,12 +1495,12 @@
                 const userId = $(this).data('id');
                 Swal.fire({
                     title: 'Confirmation',
-                    text: 'Êtes-vous sûr de vouloir supprimer cet utilisateur ? Cette action est irréversible.',
+                    text: 'Supprimer cet utilisateur ? S\'il a des commandes ou réservations, le compte sera désactivé (historique conservé). Sinon, suppression définitive.',
                     icon: 'warning',
                     showCancelButton: true,
                     confirmButtonColor: '#d33',
                     cancelButtonColor: '#3085d6',
-                    confirmButtonText: 'Oui, supprimer !',
+                    confirmButtonText: 'Oui, supprimer',
                     cancelButtonText: 'Annuler'
                 }).then((result) => {
                     if (result.isConfirmed) {
@@ -1511,12 +1511,13 @@
                                 'X-CSRF-TOKEN': document.querySelector('meta[name="_csrf"]')?.content
                             }
                         })
-                            .then(response => {
+                            .then(async response => {
+                                hideLoading();
                                 if (response.ok) {
-                                    hideLoading();
+                                    const data = await response.json().catch(() => ({}));
                                     Swal.fire({
-                                        title: 'Supprimé !',
-                                        text: 'L\'utilisateur a été supprimé.',
+                                        title: data.mode === 'soft' ? 'Compte désactivé' : 'Supprimé',
+                                        text: data.message || 'L\'utilisateur a été traité.',
                                         icon: 'success',
                                         confirmButtonColor: '#4567b7'
                                     }).then(() => {
@@ -1524,9 +1525,9 @@
                                         loadStats();
                                     });
                                 } else {
-                                    Swal.fire('Erreur', 'Erreur lors de la suppression de l\'utilisateur.', 'error');
+                                    const err = await response.json().catch(() => ({}));
+                                    Swal.fire('Erreur', err.message || 'Erreur lors de la suppression de l\'utilisateur.', 'error');
                                 }
-                                hideLoading();
                             })
                             .catch(error => {
                                 console.error('Error deleting user:', error);
@@ -1758,12 +1759,12 @@
 
                 Swal.fire({
                     title: 'Action groupée',
-                    text: `Voulez-vous vraiment supprimer les ${selectedIds.length} utilisateurs sélectionnés ? Cette action supprimera également leurs commandes et réservations.`,
+                    text: `Traiter ${selectedIds.length} utilisateur(s) ? Les comptes avec commandes/réservations seront désactivés (historique conservé) ; les autres seront supprimés définitivement.`,
                     icon: 'warning',
                     showCancelButton: true,
                     confirmButtonColor: '#e74c3c',
                     cancelButtonColor: '#95a5a6',
-                    confirmButtonText: 'Oui, supprimer tout',
+                    confirmButtonText: 'Oui, continuer',
                     cancelButtonText: 'Annuler'
                 }).then((result) => {
                     if (result.isConfirmed) {
@@ -1774,17 +1775,19 @@
                                 'Content-Type': 'application/json',
                                 'X-CSRF-TOKEN': document.querySelector('meta[name="_csrf"]')?.content
                             },
-                            body: JSON.stringify(selectedIds)
-                        }).then(response => {
+                            body: JSON.stringify(selectedIds.map(id => parseInt(id, 10)))
+                        }).then(async response => {
+                            hideLoading();
                             if (response.ok) {
+                                const data = await response.json().catch(() => ({}));
                                 table.ajax.reload();
                                 loadStats();
                                 selectAll.prop('checked', false);
                                 updateBulkDeleteBtn();
-                                Swal.fire('Succès', 'Utilisateurs supprimés.', 'success');
+                                Swal.fire('Succès', data.message || 'Utilisateurs traités.', 'success');
                             } else {
-                                hideLoading();
-                                Swal.fire('Erreur', 'Une erreur est survenue lors de la suppression.', 'error');
+                                const err = await response.json().catch(() => ({}));
+                                Swal.fire('Erreur', err.message || 'Une erreur est survenue lors de la suppression.', 'error');
                             }
                         }).catch(error => {
                             hideLoading();

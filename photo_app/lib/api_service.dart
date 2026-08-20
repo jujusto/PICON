@@ -17,6 +17,8 @@ class ApiService {
   static final String rootUrl = _resolveRootUrl(baseUrl);
   static SharedPreferences? _preferences;
 
+  static const String _productionApiBaseUrl = 'https://api.photopicon.com/api';
+
   static String _resolveApiBaseUrl() {
     const envApiBaseUrl = String.fromEnvironment('API_BASE_URL');
     if (envApiBaseUrl.isNotEmpty) {
@@ -24,19 +26,11 @@ class ApiService {
     }
 
     if (kDebugMode) {
-      if (!kIsWeb && Platform.isAndroid) {
-        // 10.0.2.2 = émulateur Android uniquement. Sur un vrai téléphone (USB/Wi‑Fi),
-        // lancer avec : --dart-define=API_BASE_URL=http://IP_DU_PC:8080/api
-        debugPrint(
-          '⚠️ API_BASE_URL non défini. Défaut émulateur: http://10.0.2.2:8080/api — '
-          'sur téléphone physique, utilisez l\'IP locale du PC (ex. http://192.168.1.75:8080/api).',
-        );
-        return 'http://10.0.2.2:8080/api';
-      }
-      return 'http://localhost:8080/api';
+      debugPrint('API: production ($_productionApiBaseUrl). '
+          'Backend local : --dart-define=API_BASE_URL=http://IP:8081/api');
     }
 
-    return 'https://api.photopicon.com/api';
+    return _productionApiBaseUrl;
   }
 
   static String _normalizeApiBaseUrl(String value) {
@@ -463,11 +457,16 @@ class ApiService {
         .toList();
   }
 
-  static Future<FeaturedContent> fetchFeaturedContent() async {
-    final url = '$baseUrl/featured-content/active';
-    final response = await _safeGet(url);
-    final Map<String, dynamic> responseData = _handleApiResponse(response);
-    return FeaturedContent.fromJson(responseData);
+  static Future<FeaturedContent?> fetchFeaturedContent() async {
+    try {
+      // Prod expose la liste sur GET /featured-content (pas /active).
+      final list = await fetchActiveFeaturedContents();
+      if (list.isEmpty) return null;
+      return list.first;
+    } catch (e) {
+      debugPrint('fetchFeaturedContent: $e');
+      return null;
+    }
   }
 
   static Future<Booking> createBooking(Booking booking) async {
@@ -517,25 +516,49 @@ class ApiService {
 
   // fetch active featured contents
   static Future<List<FeaturedContent>> fetchActiveFeaturedContents() async {
-    final url = '$baseUrl/featured-content';
-    final response = await _safeGet(url);
-    final dynamic data = _handleApiResponse(response);
-    if (data == null) return [];
-    final list = data as List<dynamic>;
-    return list
-        .map((e) => FeaturedContent.fromJson(e as Map<String, Object?>))
-        .where((fc) => fc.active)
-        .toList()
-      ..sort((a, b) => a.priority.compareTo(b.priority));
+    try {
+      final url = '$baseUrl/featured-content';
+      final response = await _safeGet(url);
+      final dynamic data = _handleApiResponse(response);
+      if (data == null) return [];
+      if (data is! List) return [];
+      return data
+          .whereType<Map<String, dynamic>>()
+          .map((e) => FeaturedContent.fromJson(e.cast<String, Object?>()))
+          .where((fc) => fc.active)
+          .toList()
+        ..sort((a, b) => a.priority.compareTo(b.priority));
+    } catch (e) {
+      debugPrint('fetchActiveFeaturedContents: $e');
+      return [];
+    }
   }
 
-// fetch contact info
+  /// Coordonnées studio de secours si l'API contact-info échoue (404/401/réseau).
+  static const ContactInfo defaultContactInfo = ContactInfo(
+    address: 'Kodjoviakopé',
+    phoneNumber: '+228 98526226 / 72683032',
+    whatsappNumber: '+228 98526226',
+    email: 'infos@photopicon.com',
+    openingHours: 'Lun-Dim: 8h00-20h00',
+    facebookUrl: 'https://www.facebook.com/share/1NncFmswZN/',
+  );
+
+  // fetch contact info
   static Future<ContactInfo> fetchContactInfo() async {
-    final url =
-        '$baseUrl/public/contact-info'; // Endpoint to fetch contact info
-    final response = await _safeGet(url);
-    final Map<String, dynamic> responseData = _handleApiResponse(response);
-    return ContactInfo.fromJson(responseData);
+    try {
+      final url = '$baseUrl/public/contact-info';
+      final response = await _safeGet(url);
+      final responseData = _handleApiResponse(response);
+      if (responseData is! Map<String, dynamic>) {
+        debugPrint('fetchContactInfo: réponse inattendue, fallback local');
+        return defaultContactInfo;
+      }
+      return ContactInfo.fromJson(Map<String, Object?>.from(responseData));
+    } catch (e) {
+      debugPrint('fetchContactInfo: $e — fallback local');
+      return defaultContactInfo;
+    }
   }
 
 // verify pin for password reset

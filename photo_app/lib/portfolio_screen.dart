@@ -110,7 +110,9 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                   itemBuilder: (context, index) {
                     final format = photoFormats[index];
                     return GestureDetector(
-                      onTap: () => _openDetails(context, format),
+                      onTap: format.images.isEmpty
+                          ? null
+                          : () => _openDetails(context, format),
                       child: DimensionTile(format: format),
                     );
                   },
@@ -135,20 +137,36 @@ class DimensionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final hasImage = format.images.isNotEmpty;
     return Card(
       elevation: 6,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       clipBehavior: Clip.antiAlias,
       child: Stack(
         children: [
-          CachedNetworkImage(
-            imageUrl: '${ApiService.baseUrl.replaceAll('/api', '')}${format.images.first}',
-            fit: BoxFit.cover,
-            width: double.infinity,
-            height: double.infinity,
-            placeholder: (context, url) => const Center(child: CircularProgressIndicator()),
-            errorWidget: (context, url, error) => const Icon(Icons.image_not_supported),
-          ),
+          if (hasImage)
+            CachedNetworkImage(
+              imageUrl: ApiService.getFullImageUrl(format.images.first),
+              fit: BoxFit.cover,
+              width: double.infinity,
+              height: double.infinity,
+              httpHeaders: ApiService.imageAuthHeaders,
+              placeholder: (context, url) =>
+                  const Center(child: CircularProgressIndicator()),
+              errorWidget: (context, url, error) => const ColoredBox(
+                color: Color(0xFFE8E8E8),
+                child: Center(
+                  child: Icon(Icons.image_not_supported, size: 40),
+                ),
+              ),
+            )
+          else
+            const ColoredBox(
+              color: Color(0xFFE8E8E8),
+              child: Center(
+                child: Icon(Icons.photo_size_select_actual_outlined, size: 40),
+              ),
+            ),
           _TileInfo(format: format),
           if (format.isPopular) const _PopularBadge(),
         ],
@@ -261,23 +279,37 @@ class _DimensionDetailDialogState extends State<DimensionDetailDialog> {
               child: SingleChildScrollView(
                 child: Column(
                   children: [
-                    CarouselSlider(
-                      options: CarouselOptions(
+                    if (widget.format.images.isEmpty)
+                      const SizedBox(
                         height: 300,
-                        viewportFraction: 1,
-                        onPageChanged: (i, _) =>
-                            setState(() => currentIndex = i),
+                        child: Center(
+                          child: Icon(Icons.broken_image,
+                              color: Colors.white54, size: 64),
+                        ),
+                      )
+                    else
+                      CarouselSlider(
+                        options: CarouselOptions(
+                          height: 300,
+                          viewportFraction: 1,
+                          onPageChanged: (i, _) =>
+                              setState(() => currentIndex = i),
+                        ),
+                        items: widget.format.images.map((img) {
+                          return CachedNetworkImage(
+                            imageUrl: ApiService.getFullImageUrl(img),
+                            fit: BoxFit.contain,
+                            width: double.infinity,
+                            httpHeaders: ApiService.imageAuthHeaders,
+                            placeholder: (context, url) => const Center(
+                                child: CircularProgressIndicator()),
+                            errorWidget: (context, url, error) => const Icon(
+                                Icons.broken_image,
+                                color: Colors.white54,
+                                size: 48),
+                          );
+                        }).toList(),
                       ),
-                      items: widget.format.images.map((img) {
-                        return CachedNetworkImage(
-                          imageUrl: '${ApiService.baseUrl.replaceAll('/api', '')}$img',
-                          fit: BoxFit.contain,
-                          width: double.infinity,
-                          placeholder: (context, url) => const Center(child: CircularProgressIndicator()),
-                          errorWidget: (context, url, error) => const Icon(Icons.broken_image),
-                        );
-                      }).toList(),
-                    ),
                     const SizedBox(height: 12),
                     Padding(
                       padding: const EdgeInsets.all(16),

@@ -6,6 +6,7 @@ import com.studiophoto.photoappbackend.frame.PhotoFrame;
 import com.studiophoto.photoappbackend.frame.PhotoFrameRepository;
 import com.studiophoto.photoappbackend.model.User;
 import com.studiophoto.photoappbackend.notification.UserNotificationService;
+import com.studiophoto.photoappbackend.storage.StorageService;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -16,7 +17,8 @@ import org.springframework.stereotype.Service;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import java.math.BigDecimal;
@@ -36,6 +38,7 @@ public class OrderService {
     private final DimensionRepository dimensionRepository;
     private final PhotoFrameRepository photoFrameRepository;
     private final UserNotificationService userNotificationService;
+    private final StorageService storageService;
 
     @Transactional
     public Order createOrder(CreateOrderRequest request, User user) {
@@ -450,6 +453,7 @@ public class OrderService {
         orderRepository.delete(order);
     }
 
+    @Transactional
     public byte[] createOrderPhotosZip(Long orderId, User currentUser) throws IOException {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new IllegalArgumentException("Commande non trouvée avec l'ID: " + orderId));
@@ -459,79 +463,138 @@ public class OrderService {
             throw new IllegalArgumentException("Vous n'êtes pas autorisé à télécharger les photos de cette commande.");
         }
 
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        try (ZipOutputStream zos = new ZipOutputStream(baos)) {
-            int fileCount = 0;
-            for (OrderItem item : order.getOrderItems()) {
-                // Generate a unique filename for each photo in the zip
-                // Using a combination of order item ID, size, and quantity
-                // Plus a counter to handle multiple photos of the same item
-                String originalFileName = item.getImageUrl().substring(item.getImageUrl().lastIndexOf('/') + 1);
-                String entryName = String.format("%s_%s_%dx_%s",
-                        order.getOrderNumber(), // Use orderNumber for better identification
-                        item.getPhotoSize().replace(" ", "_"),
-                        item.getQuantity(),
-                        originalFileName);
-
-                // Fetch the image from the URL
-                URL url = new URL(item.getImageUrl());
-                try (InputStream is = url.openStream()) {
-                    zos.putNextEntry(new ZipEntry(entryName));
-                    byte[] buffer = new byte[1024];
-                    int len;
-                    while ((len = is.read(buffer)) > 0) {
-                        zos.write(buffer, 0, len);
-                    }
-                    zos.closeEntry();
-                    fileCount++;
-                } catch (IOException e) {
-                    // Log the error but continue with other files
-                    log.error("Failed to download image from {}: {}", item.getImageUrl(), e.getMessage());
-                }
-            }
-            if (fileCount == 0) {
-                throw new IOException("No photos were successfully added to the zip file.");
-            }
-        }
-        return baos.toByteArray();
+        return buildOrderPhotosZip(order);
     }
 
+    @Transactional
     public byte[] createOrderPhotosZipForAdmin(Long orderId) throws IOException {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new IllegalArgumentException("Commande non trouvée avec l'ID: " + orderId));
 
+        return buildOrderPhotosZip(order);
+    }
+
+    /**
+     * Construit un ZIP à partir des fichiers locaux (storage.location), pas via HTTP.
+     * Les imageUrl en BDD sont typiquement relatives : /uploads/user_X/.../file.jpg
+     * Les fichiers manquants sont ignorés (log) pour ne pas faire planter tout le ZIP.
+     */
+    private byte[] buildOrderPhotosZip(Order order) throws IOException {
+        if (order.getOrderItems() == null || order.getOrderItems().isEmpty()) {
+            throw new IOException("Cette commande ne contient aucune photo.");
+        }
+
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        int fileCount = 0;
+        int skipped = 0;
+
         try (ZipOutputStream zos = new ZipOutputStream(baos)) {
-            int fileCount = 0;
+            int index = 0;
             for (OrderItem item : order.getOrderItems()) {
-                String originalFileName = item.getImageUrl().substring(item.getImageUrl().lastIndexOf('/') + 1);
-                String entryName = String.format("%s_%s_%dx_%s",
-                        order.getOrderNumber(), // Use orderNumber for better identification
-                        item.getPhotoSize().replace(" ", "_"),
+                index++;
+                String imageUrl = item.getImageUrl();
+                if (imageUrl == null || imageUrl.isBlank()) {
+                    skipped++;
+                    log.warn("Order {} item #{}: imageUrl vide, ignore", order.getId(), index);
+                    continue;
+                }
+
+                Optional<Path> resolved = resolveLocalImagePath(imageUrl);
+                if (resolved.isEmpty()) {
+                    skipped++;
+                    log.warn("Order {} item #{}: chemin non resolvable pour '{}', ignore",
+                            order.getId(), index, imageUrl);
+                    continue;
+                }
+
+                Path file = resolved.get();
+                if (!Files.isRegularFile(file) || !Files.isReadable(file)) {
+                    skipped++;
+                    log.warn("Order {} item #{}: fichier manquant ou illisible '{}', ignore",
+                            order.getId(), index, file);
+                    continue;
+                }
+
+                String originalFileName = file.getFileName().toString();
+                String sizeLabel = item.getPhotoSize() != null
+                        ? item.getPhotoSize().replace(" ", "_")
+                        : "taille_inconnue";
+                String orderLabel = order.getOrderNumber() != null
+                        ? order.getOrderNumber()
+                        : ("order_" + order.getId());
+                String entryName = String.format("%s_%s_%dx_%d_%s",
+                        orderLabel,
+                        sizeLabel,
                         item.getQuantity(),
+                        index,
                         originalFileName);
 
-                // Fetch the image from the URL
-                URL url = new URL(item.getImageUrl());
-                try (InputStream is = url.openStream()) {
+                try (InputStream is = Files.newInputStream(file)) {
                     zos.putNextEntry(new ZipEntry(entryName));
-                    byte[] buffer = new byte[1024];
-                    int len;
-                    while ((len = is.read(buffer)) > 0) {
-                        zos.write(buffer, 0, len);
-                    }
+                    is.transferTo(zos);
                     zos.closeEntry();
                     fileCount++;
                 } catch (IOException e) {
-                    // Log the error but continue with other files
-                    log.error("Failed to download image from {}: {}", item.getImageUrl(), e.getMessage());
+                    skipped++;
+                    log.error("Order {} item #{}: echec lecture '{}': {}",
+                            order.getId(), index, file, e.getMessage());
                 }
             }
-            if (fileCount == 0) {
-                throw new IOException("No photos were successfully added to the zip file.");
-            }
         }
+
+        if (fileCount == 0) {
+            throw new IOException(
+                    "Aucune photo accessible pour cette commande"
+                            + (skipped > 0 ? " (" + skipped + " fichier(s) manquant(s) ou invalide(s))" : "")
+                            + ".");
+        }
+
+        if (skipped > 0) {
+            log.warn("Order {}: ZIP genere avec {} photo(s), {} ignoree(s)",
+                    order.getId(), fileCount, skipped);
+        }
+
         return baos.toByteArray();
+    }
+
+    /**
+     * Convertit une imageUrl BDD (/uploads/..., URL absolue .../uploads/..., ou chemin relatif)
+     * en Path sous storage.location. Refuse les chemins hors du repertoire de stockage.
+     */
+    private Optional<Path> resolveLocalImagePath(String imageUrl) {
+        String path = imageUrl.trim();
+
+        // URL absolue https://api.../uploads/... → ne garder que /uploads/...
+        if (path.startsWith("http://") || path.startsWith("https://")) {
+            int uploadsIdx = path.indexOf("/uploads/");
+            if (uploadsIdx < 0) {
+                return Optional.empty();
+            }
+            path = path.substring(uploadsIdx);
+        }
+
+        String relative;
+        if (path.startsWith("/uploads/")) {
+            relative = path.substring("/uploads/".length());
+        } else if (path.startsWith("uploads/")) {
+            relative = path.substring("uploads/".length());
+        } else if (path.startsWith("/")) {
+            relative = path.substring(1);
+        } else {
+            relative = path;
+        }
+
+        if (relative.isBlank()) {
+            return Optional.empty();
+        }
+
+        Path root = storageService.load("").toAbsolutePath().normalize();
+        Path file = storageService.load(relative).toAbsolutePath().normalize();
+        if (!file.startsWith(root)) {
+            log.warn("Chemin hors stockage refuse: {} → {}", imageUrl, file);
+            return Optional.empty();
+        }
+        return Optional.of(file);
     }
 
     @Transactional

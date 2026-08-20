@@ -60,41 +60,40 @@ class _ContactScreenState extends State<ContactScreen> {
                       child:
                           CircularProgressIndicator(color: AppColors.primary));
                 }
-                if (snapshot.hasError) {
-                  return Center(
-                    child: Text(
-                      'Impossible de charger les informations : ${snapshot.error}',
-                      style: const TextStyle(color: Colors.red, fontSize: 16),
-                      textAlign: TextAlign.center,
-                    ),
-                  );
-                }
-                if (snapshot.hasData) {
-                  final contactInfo = snapshot.data!;
-                  return SingleChildScrollView(
-                    padding: const EdgeInsets.all(24.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const SizedBox(height: 20),
-                        _buildInfoCard(context, contactInfo),
-                        const SizedBox(height: 30),
-                        Text(
-                          'Suivez-nous',
-                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.textPrimary),
+                // fetchContactInfo renvoie toujours un fallback local en cas d'erreur API.
+                final contactInfo =
+                    snapshot.data ?? ApiService.defaultContactInfo;
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.all(24.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SizedBox(height: 20),
+                      if (snapshot.hasError)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Text(
+                            'Coordonnées hors-ligne (serveur indisponible).',
+                            style: TextStyle(
+                              color: Colors.orange.shade800,
+                              fontSize: 13,
+                            ),
+                          ),
                         ),
-                        const SizedBox(height: 20),
-                        _buildSocialRow(contactInfo),
-                      ],
-                    ),
-                  );
-                }
-                return const Center(
-                  child: Text(
-                    'Aucune information de contact disponible.',
-                    style: TextStyle(color: AppColors.textSecondary),
+                      _buildInfoCard(context, contactInfo),
+                      const SizedBox(height: 30),
+                      Text(
+                        'Suivez-nous',
+                        style: Theme.of(context)
+                            .textTheme
+                            .headlineSmall
+                            ?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.textPrimary),
+                      ),
+                      const SizedBox(height: 20),
+                      _buildSocialRow(contactInfo),
+                    ],
                   ),
                 );
               },

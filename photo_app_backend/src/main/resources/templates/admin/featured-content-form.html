@@ -339,7 +339,8 @@
 
                             <input type="file" id="fileInput" name="file" class="form-control-file" accept="image/*" />
 
-                            <small class="form-text text-muted">Sélectionnez une image (JPG, PNG).</small>
+                            <small class="form-text text-muted">JPG, PNG. Images &gt; 1 Mo compressées automatiquement.</small>
+                            <small id="uploadStatus" class="form-text text-primary"></small>
 
                             <div th:if="${featuredContent.imageUrl != null and featuredContent.imageUrl != ''}" class="mt-2">
 
@@ -438,12 +439,15 @@
         <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 
         <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script> <!-- Inclure SweetAlert2 -->
+        <th:block th:replace="~{admin/fragments/image-compress-script :: image-compress-script}"></th:block>
 
         <script th:inline="javascript">
 
             /*<![CDATA[*/
 
             $(document).ready(function() {
+        AdminImageUpload.attach({ form: 'form', input: '#fileInput', statusSelector: '#uploadStatus' });
+
         // Loading overlay
         function showLoading() {
             $('#loadingOverlay').fadeIn();

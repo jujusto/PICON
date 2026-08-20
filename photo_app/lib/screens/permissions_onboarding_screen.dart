@@ -3,7 +3,8 @@ import 'package:Picon/utils/colors.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-/// Écran obligatoire au premier lancement : autorisations requises pour utiliser Picon.
+/// Écran obligatoire au premier lancement : autorisation téléphone (USSD).
+/// Les photos passent par le sélecteur système — pas de permission galerie bloquante.
 class PermissionsOnboardingScreen extends StatefulWidget {
   final VoidCallback onComplete;
 
@@ -20,6 +21,15 @@ class PermissionsOnboardingScreen extends StatefulWidget {
 class _PermissionsOnboardingScreenState extends State<PermissionsOnboardingScreen> {
   bool _isRequesting = false;
   String? _errorMessage;
+  bool _needsSettings = false;
+
+  Future<void> _completeOnboarding() async {
+    await AppPermissionsService.markOnboardingDone();
+    if (mounted) {
+      setState(() => _isRequesting = false);
+      widget.onComplete();
+    }
+  }
 
   Future<void> _authorize() async {
     if (_isRequesting) return;
@@ -28,27 +38,54 @@ class _PermissionsOnboardingScreenState extends State<PermissionsOnboardingScree
       _errorMessage = null;
     });
 
-    final results = await AppPermissionsService.requestEssentialPermissions();
-    final granted = AppPermissionsService.essentialGranted(results) ||
-        await AppPermissionsService.areEssentialCurrentlyGranted();
-
-    if (!mounted) return;
-
-    if (!granted) {
-      setState(() {
-        _isRequesting = false;
-        _errorMessage =
-            'Ces autorisations sont obligatoires pour utiliser Picon. '
-            'Activez-les dans les paramètres ou appuyez à nouveau sur le bouton.';
-      });
+    // Téléphone uniquement — jamais Permission.photos / storage (boucle rouge).
+    final current = await AppPermissionsService.phoneStatus();
+    if (AppPermissionsService.isPhoneUsable(current)) {
+      await _completeOnboarding();
       return;
     }
 
-    await AppPermissionsService.markOnboardingDone();
-    if (mounted) {
-      setState(() => _isRequesting = false);
-      widget.onComplete();
+    // Déjà refus définitif → message + réglages (request() ne dialoguera plus).
+    if (AppPermissionsService.needsAppSettings(current)) {
+      if (!mounted) return;
+      setState(() {
+        _isRequesting = false;
+        _needsSettings = true;
+        _errorMessage =
+            'L\'accès téléphone a été refusé définitivement. '
+            'Ouvrez les paramètres, activez « Téléphone », puis revenez ici.';
+      });
+      await openAppSettings();
+      return;
     }
+
+    final status = await AppPermissionsService.requestPhonePermission();
+    if (!mounted) return;
+
+    if (AppPermissionsService.isPhoneUsable(status) ||
+        await AppPermissionsService.isPhoneCurrentlyGranted()) {
+      await _completeOnboarding();
+      return;
+    }
+
+    final permanentlyBlocked = AppPermissionsService.needsAppSettings(status);
+    setState(() {
+      _isRequesting = false;
+      _needsSettings = permanentlyBlocked;
+      _errorMessage = permanentlyBlocked
+          ? 'L\'accès téléphone a été refusé définitivement. '
+              'Ouvrez les paramètres, activez « Téléphone », puis revenez ici.'
+          : 'L\'accès téléphone est nécessaire pour le paiement Mobile Money. '
+              'Appuyez à nouveau pour autoriser, ou ouvrez les paramètres.';
+    });
+
+    if (permanentlyBlocked) {
+      await openAppSettings();
+    }
+  }
+
+  Future<void> _openSettings() async {
+    await openAppSettings();
   }
 
   @override
@@ -77,8 +114,10 @@ class _PermissionsOnboardingScreenState extends State<PermissionsOnboardingScree
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Pour commander et payer vos tirages photo, Picon a besoin de ces accès. '
-                  'Vous ne pourrez pas continuer sans les autoriser.',
+                  'Pour payer vos tirages via Mobile Money (Yas / Flooz), '
+                  'Picon a besoin de l\'accès téléphone. '
+                  'Le choix des photos se fait via le sélecteur du système — '
+                  'aucune autorisation galerie n\'est exigée ici.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 14,
@@ -92,13 +131,17 @@ class _PermissionsOnboardingScreenState extends State<PermissionsOnboardingScree
                   title: 'Téléphone',
                   subtitle:
                       'Détecter vos cartes SIM et lancer le paiement Mobile Money (Yas / Flooz) sur la bonne ligne.',
+                  required: true,
                 ),
                 const SizedBox(height: 16),
                 const _PermissionTile(
                   icon: Icons.photo_library_outlined,
                   title: 'Photos',
                   subtitle:
-                      'Choisir les images à imprimer depuis votre galerie.',
+                      'Via le sélecteur système au moment de commander — '
+                      'pas d\'accès permanent à toute la galerie '
+                      '(compatible anciens et récents Android).',
+                  required: false,
                 ),
                 if (_errorMessage != null) ...[
                   const SizedBox(height: 20),
@@ -154,9 +197,11 @@ class _PermissionsOnboardingScreenState extends State<PermissionsOnboardingScree
                               color: Colors.white,
                             ),
                           )
-                        : const Text(
-                            'Autoriser et continuer',
-                            style: TextStyle(
+                        : Text(
+                            _needsSettings
+                                ? 'Réessayer après paramètres'
+                                : 'Autoriser et continuer',
+                            style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
                             ),
@@ -169,7 +214,7 @@ class _PermissionsOnboardingScreenState extends State<PermissionsOnboardingScree
                     width: double.infinity,
                     height: 48,
                     child: OutlinedButton(
-                      onPressed: _isRequesting ? null : openAppSettings,
+                      onPressed: _isRequesting ? null : _openSettings,
                       child: const Text('Ouvrir les paramètres'),
                     ),
                   ),
@@ -188,11 +233,13 @@ class _PermissionTile extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
+  final bool required;
 
   const _PermissionTile({
     required this.icon,
     required this.title,
     required this.subtitle,
+    required this.required,
   });
 
   @override
@@ -220,13 +267,29 @@ class _PermissionTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                    color: AppColors.textPrimary,
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      required ? 'Obligatoire' : 'À la demande',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: required
+                            ? AppColors.primary
+                            : AppColors.textSecondary,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 4),
                 Text(

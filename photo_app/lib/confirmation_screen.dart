@@ -5,8 +5,10 @@ import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'history_screen.dart';
 import 'api_service.dart';
+import 'payment_success_screen.dart';
 import 'services/ussd_launch_service.dart';
 import 'utils/colors.dart';
+import 'utils/google_play_tester.dart';
 import 'utils/mobile_operator_utils.dart';
 import 'utils/phone_payment_permissions.dart';
 
@@ -49,13 +51,68 @@ class _ConfirmationScreenState extends State<ConfirmationScreen> {
   @override
   void initState() {
     super.initState();
-    if (widget.launchUssdOnOpen) {
+    // Pas d'USSD auto pour le testeur Google Play (parcours sans paiement réel).
+    if (widget.launchUssdOnOpen && !isGooglePlayTester()) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_autoUssdLaunched) {
           _autoUssdLaunched = true;
           _launchUssd();
         }
       });
+    }
+  }
+
+  /// Termine le parcours commande pour le testeur Play Store uniquement.
+  /// Tente d'abord [ApiService.confirmOrderPayment] sans preuve USSD ;
+  /// en échec, simule la réussite côté UI uniquement.
+  Future<void> _continueGooglePlayTest() async {
+    if (!isGooglePlayTester() || _isConfirmingPayment) return;
+
+    setState(() => _isConfirmingPayment = true);
+    var backendConfirmed = false;
+
+    try {
+      await ApiService.confirmOrderPayment(
+        widget.orderId,
+        paymentReference: 'GOOGLE_PLAY_TEST',
+        paymentProofType: 'GOOGLE_PLAY_TEST',
+        paymentProofText:
+            'Parcours test Google Play — sans USSD réel ($kGooglePlayTesterEmail)',
+      );
+      backendConfirmed = true;
+    } catch (_) {
+      // Endpoints inchangés : si confirm échoue sans preuve, on continue en UI.
+    }
+
+    if (!mounted) return;
+
+    ApiService.clearPendingPayment();
+    ApiService.shouldClearCart = true;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          backendConfirmed
+              ? 'Mode test Google : confirmation enregistrée (sans USSD réel).'
+              : 'Mode test Google : parcours simulé côté app (sans USSD réel). '
+                  'La commande peut rester en attente côté serveur.',
+        ),
+        backgroundColor: backendConfirmed ? Colors.green : Colors.orange,
+        duration: const Duration(seconds: 6),
+      ),
+    );
+
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(
+        builder: (_) => PaymentSuccessScreen(
+          orderId: widget.orderId.toString(),
+        ),
+      ),
+      (route) => false,
+    );
+
+    if (mounted) {
+      setState(() => _isConfirmingPayment = false);
     }
   }
 
@@ -441,6 +498,44 @@ class _ConfirmationScreenState extends State<ConfirmationScreen> {
                   padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
               ),
+              if (isGooglePlayTester()) ...[
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF3E0),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFFFB74D)),
+                  ),
+                  child: const Text(
+                    'Compte testeur Google Play détecté. '
+                    'Vous pouvez terminer la commande sans paiement USSD réel.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Color(0xFFE65100),
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed:
+                      _isConfirmingPayment ? null : _continueGooglePlayTest,
+                  icon: _isConfirmingPayment
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.science_outlined),
+                  label: const Text('Continuer (mode test Google)'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFE65100),
+                    side: const BorderSide(color: Color(0xFFE65100)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ],
               const SizedBox(height: 20),
               const Text(
                 'Capture d\'écran *',

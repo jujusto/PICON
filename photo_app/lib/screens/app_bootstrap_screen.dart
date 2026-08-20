@@ -3,6 +3,7 @@ import 'package:Picon/home_screen.dart';
 import 'package:Picon/login_screen.dart';
 import 'package:Picon/screens/permissions_onboarding_screen.dart';
 import 'package:Picon/utils/app_permissions_service.dart';
+import 'package:Picon/utils/app_update_service.dart';
 import 'package:Picon/utils/colors.dart';
 import 'package:flutter/material.dart';
 
@@ -31,10 +32,20 @@ class _AppBootstrapScreenState extends State<AppBootstrapScreen> {
       _loading = false;
       _showPermissionsOnboarding = !done;
     });
+    _schedulePlayUpdateCheck();
   }
 
   void _onPermissionsComplete() {
     setState(() => _showPermissionsOnboarding = false);
+    _schedulePlayUpdateCheck();
+  }
+
+  /// Après splash / bootstrap, pas pendant l’écran permissions.
+  void _schedulePlayUpdateCheck() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _loading || _showPermissionsOnboarding) return;
+      AppUpdateService.instance.maybePrompt(context);
+    });
   }
 
   Widget _destination() {

@@ -8,8 +8,8 @@ echo.
 echo IMPORTANT : Ce fichier doit etre lance en tant qu'Administrateur !
 pause
 
-echo 1. Creation du dossier uploads...
-if not exist "C:\Applications\StudioPhoto\uploads" mkdir "C:\Applications\StudioPhoto\uploads"
+echo 1. Creation du dossier uploads (F:\uploads)...
+if not exist "F:\uploads" mkdir "F:\uploads"
 
 echo 2. Installation du service...
 photo-backend-service.exe install

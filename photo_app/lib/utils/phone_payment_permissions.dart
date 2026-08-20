@@ -1,20 +1,38 @@
 import 'dart:io';
 
+import 'package:Picon/utils/app_permissions_service.dart';
 import 'package:Picon/utils/colors.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 /// Permissions nécessaires pour le paiement USSD sur la bonne carte SIM.
+///
+/// Aligné sur [AppPermissionsService] : téléphone uniquement, jamais photos.
+/// Si refus définitif → [openAppSettings].
 class PhonePaymentPermissions {
   PhonePaymentPermissions._();
 
-  /// Vérifie l'autorisation téléphone (déjà demandée au 1er lancement si possible).
+  /// Vérifie / redemande l'autorisation téléphone avant un paiement.
   static Future<bool> ensureGranted() async {
     if (!Platform.isAndroid) return true;
-    final phone = await Permission.phone.status;
-    if (phone.isGranted) return true;
-    final result = await Permission.phone.request();
-    return result.isGranted;
+
+    final current = await AppPermissionsService.phoneStatus();
+    if (AppPermissionsService.isPhoneUsable(current)) return true;
+
+    if (AppPermissionsService.needsAppSettings(current)) {
+      await openAppSettings();
+      return AppPermissionsService.isPhoneCurrentlyGranted();
+    }
+
+    final result = await AppPermissionsService.requestPhonePermission();
+    if (AppPermissionsService.isPhoneUsable(result)) return true;
+
+    if (AppPermissionsService.needsAppSettings(result)) {
+      await openAppSettings();
+      return AppPermissionsService.isPhoneCurrentlyGranted();
+    }
+
+    return false;
   }
 
   /// Dialogue explicatif si l'utilisateur a refusé (message rouge habituel).
