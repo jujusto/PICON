@@ -358,22 +358,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
 
     if (pickedFiles.isNotEmpty) {
-      setState(() {
-        _isUploading = true;
-      });
-
       try {
-        // Compression des images avant upload
-        final compressedPaths = await compressBatch(pickedFiles);
-        final compressedFiles = compressedPaths.map((p) => File(p)).toList();
-        final uploadedUrls = await ApiService.uploadPhotos(compressedFiles);
-
         if (_prices != null && _prices!.isNotEmpty) {
-          // Copies temporaires : n'affectent le panier QUE si l'utilisateur confirme
-          final tempImages = uploadedUrls.toList();
+          // Les chemins locaux permettent d’afficher instantanément les photos
+          // et de calculer la qualité avant la fin des transferts réseau.
+          final tempImages = pickedFiles.map((file) => file.path).toList();
           final tempDetails = <String, Map<String, dynamic>>{};
 
-          final confirmed = await Navigator.push<bool>(
+          final result = await Navigator.push<PhotoPreviewResult>(
             context,
             MaterialPageRoute(
               builder: (context) => PhotoPreviewScreen(
@@ -386,10 +378,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ),
           );
 
-          if (confirmed == true && mounted) {
+          if (result != null && mounted) {
             setState(() {
-              _selectedImages.addAll(tempImages);
-              for (final e in tempDetails.entries) {
+              _selectedImages.addAll(result.imageUrls);
+              for (final e in result.photoDetails.entries) {
                 _photoDetails[e.key] = e.value;
               }
               _calculateTotal();
@@ -406,12 +398,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(errorMessage), backgroundColor: Colors.red),
           );
-        }
-      } finally {
-        if (mounted) {
-          setState(() {
-            _isUploading = false;
-          });
         }
       }
     } else {
@@ -816,7 +802,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             for (final e in _photoDetails.entries)
                               e.key: Map<String, dynamic>.from(e.value),
                           };
-                          final confirmed = await Navigator.push<bool>(
+                          final result = await Navigator.push<PhotoPreviewResult>(
                             context,
                             MaterialPageRoute(
                               builder: (context) => PhotoPreviewScreen(
@@ -828,14 +814,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               ),
                             ),
                           );
-                          if (confirmed == true && mounted) {
+                          if (result != null && mounted) {
                             setState(() {
-                              // Applique les modifications de formats/quantités validées
-                              for (final e in tempDetails.entries) {
-                                if (_photoDetails.containsKey(e.key)) {
-                                  _photoDetails[e.key] = e.value;
-                                }
-                              }
+                              // Le sélecteur renvoie uniquement les URLs backend
+                              // effectivement disponibles pour la commande.
+                              _selectedImages
+                                ..clear()
+                                ..addAll(result.imageUrls);
+                              _photoDetails
+                                ..clear()
+                                ..addAll(result.photoDetails);
                               _calculateTotal();
                             });
                           }
@@ -2679,8 +2667,6 @@ class _SummaryChip extends StatelessWidget {
     );
   }
 }
-
-
 
 
 

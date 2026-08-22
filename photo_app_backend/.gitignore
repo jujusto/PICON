@@ -31,3 +31,7 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Environnement de test local : ne jamais versionner les secrets ni les données.
+.env.local
+local-uploads/

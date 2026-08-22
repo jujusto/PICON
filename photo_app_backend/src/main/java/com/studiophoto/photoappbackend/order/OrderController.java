@@ -5,11 +5,13 @@ import com.studiophoto.photoappbackend.notification.UserNotificationService;
 import com.studiophoto.photoappbackend.payment.UssdCodeService;
 import com.studiophoto.photoappbackend.storage.StorageService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.util.unit.DataSize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -33,6 +35,14 @@ public class OrderController {
     private final StorageService storageService;
     private final UserNotificationService userNotificationService;
     private final UssdCodeService ussdCodeService;
+
+    /**
+     * Limite volontairement plus basse que la limite multipart historique : le
+     * nouveau flux transfère une photo à la fois et doit échouer rapidement
+     * sur une photo anormalement lourde.
+     */
+    @Value("${app.upload.single.max-file-size:25MB}")
+    private String singleUploadMaxFileSize;
 
     @PostMapping
     public ResponseEntity<?> createOrder(
@@ -93,6 +103,85 @@ public class OrderController {
                 .<ResponseEntity<?>>map(order -> ResponseEntity.ok(
                         Collections.singletonMap("ussdCode", ussdCodeService.resolveForOrder(order))))
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Nouveau contrat d’upload unitaire. L’ancien endpoint /upload est conservé
+     * tel quel afin de ne pas modifier les versions mobiles déjà publiées.
+     *
+     * Le client réutilise le même clientUploadId lors d’une reprise. Si le
+     * fichier est déjà présent, l’URL initiale est retournée sans doublon.
+     */
+    @PostMapping("/uploads/photo")
+    public ResponseEntity<?> uploadSinglePhoto(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("clientUploadId") String clientUploadId,
+            @AuthenticationPrincipal User currentUser) {
+
+        if (currentUser == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        if (file.isEmpty()) {
+            return ResponseEntity.badRequest().body("Veuillez sélectionner une photo non vide.");
+        }
+        if (clientUploadId == null || !clientUploadId.matches("^[A-Za-z0-9-]{16,80}$")) {
+            return ResponseEntity.badRequest().body("Identifiant d’upload invalide.");
+        }
+
+        String contentType = file.getContentType();
+        String extension = imageExtension(contentType);
+        if (extension == null) {
+            return ResponseEntity.badRequest().body("Format image non pris en charge.");
+        }
+        if (file.getSize() > DataSize.parse(singleUploadMaxFileSize).toBytes()) {
+            return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                    .body("La photo dépasse la taille maximale autorisée.");
+        }
+
+        String storageDirectory = "user_" + currentUser.getId() + "/single/" + clientUploadId;
+        String storedFilename = "photo" + extension;
+
+        try {
+            Path userDirectory = storageService.load(storageDirectory).normalize().toAbsolutePath();
+            Files.createDirectories(userDirectory);
+
+            Path destinationFile = userDirectory.resolve(storedFilename).normalize().toAbsolutePath();
+            if (!destinationFile.getParent().equals(userDirectory)) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("Impossible de stocker la photo dans le dossier prévu.");
+            }
+
+            String fileUrl = "/uploads/" + storageDirectory + "/" + storedFilename;
+            if (Files.exists(destinationFile)) {
+                return ResponseEntity.ok(Map.of(
+                        "uploadId", clientUploadId,
+                        "url", fileUrl,
+                        "reused", true
+                ));
+            }
+
+            file.transferTo(destinationFile);
+            return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
+                    "uploadId", clientUploadId,
+                    "url", fileUrl,
+                    "reused", false
+            ));
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Échec du stockage de la photo.");
+        }
+    }
+
+    private String imageExtension(String contentType) {
+        if (contentType == null) {
+            return null;
+        }
+        return switch (contentType.toLowerCase()) {
+            case "image/jpeg", "image/jpg" -> ".jpg";
+            case "image/png" -> ".png";
+            case "image/webp" -> ".webp";
+            default -> null;
+        };
     }
 
     @PostMapping("/upload")

@@ -13,6 +13,12 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiService {
+  /// La variante de test doit être construite explicitement avec cette option.
+  /// Elle refuse toute URL de production, même si elle est passée par erreur.
+  static const bool isLocalTestBuild =
+      bool.fromEnvironment('PICON_LOCAL_TEST', defaultValue: false);
+  static const String _configuredApiBaseUrl =
+      String.fromEnvironment('API_BASE_URL');
   static final String baseUrl = _resolveApiBaseUrl();
   static final String rootUrl = _resolveRootUrl(baseUrl);
   static SharedPreferences? _preferences;
@@ -20,9 +26,18 @@ class ApiService {
   static const String _productionApiBaseUrl = 'https://api.photopicon.com/api';
 
   static String _resolveApiBaseUrl() {
-    const envApiBaseUrl = String.fromEnvironment('API_BASE_URL');
-    if (envApiBaseUrl.isNotEmpty) {
-      return _normalizeApiBaseUrl(envApiBaseUrl);
+    if (isLocalTestBuild) {
+      if (_configuredApiBaseUrl.isEmpty ||
+          _isProductionApiUrl(_configuredApiBaseUrl)) {
+        // Route volontairement inutilisable : une APK locale mal configurée
+        // ne doit jamais retomber sur api.photopicon.com.
+        return 'http://127.0.0.1:9/api';
+      }
+      return _normalizeApiBaseUrl(_configuredApiBaseUrl);
+    }
+
+    if (_configuredApiBaseUrl.isNotEmpty) {
+      return _normalizeApiBaseUrl(_configuredApiBaseUrl);
     }
 
     if (kDebugMode) {
@@ -31,6 +46,26 @@ class ApiService {
     }
 
     return _productionApiBaseUrl;
+  }
+
+  static bool _isProductionApiUrl(String value) {
+    final normalized = value.toLowerCase();
+    return normalized.contains('api.photopicon.com');
+  }
+
+  /// Message affiché par la variante locale si les options de compilation sont
+  /// incomplètes. La version Play n’est jamais concernée.
+  static String? get localTestConfigurationError {
+    if (!isLocalTestBuild) return null;
+    if (_configuredApiBaseUrl.isEmpty) {
+      return 'Cette APK de test requiert une URL API locale. '
+          'Reconstruisez-la avec API_BASE_URL=http://IP_LOCALE:8080/api.';
+    }
+    if (_isProductionApiUrl(_configuredApiBaseUrl)) {
+      return 'L’API de production est interdite dans la variante de test. '
+          'Utilisez l’adresse LAN de votre ordinateur.';
+    }
+    return null;
   }
 
   static String _normalizeApiBaseUrl(String value) {
@@ -763,6 +798,58 @@ class ApiService {
     _handleApiResponse(response);
   }
 
+  /// Upload rétrocompatible d’une seule photo. Le client doit conserver le
+  /// [clientUploadId] pour rejouer exactement la même photo après une coupure.
+  /// L’ancien uploadPhotos(List) reste en place pour les versions déjà publiées.
+  static Future<SinglePhotoUploadResult> uploadSinglePhoto(
+    File imageFile, {
+    required String clientUploadId,
+  }) async {
+    if (_authToken == null || _authToken!.isEmpty) {
+      throw PhotoUploadException('Utilisateur non authentifié.');
+    }
+
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/orders/uploads/photo'),
+    );
+    request.headers['Authorization'] = 'Bearer $_authToken';
+    request.fields['clientUploadId'] = clientUploadId;
+    request.files.add(await http.MultipartFile.fromPath('file', imageFile.path));
+
+    try {
+      final streamedResponse = await request.send().timeout(
+            const Duration(seconds: 75),
+          );
+      final response = await http.Response.fromStream(streamedResponse);
+      final responseBody = utf8.decode(response.bodyBytes);
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw PhotoUploadException(
+          'Le serveur a refusé la photo (${response.statusCode}).',
+        statusCode: response.statusCode,
+      );
+      }
+
+      final payload = jsonDecode(responseBody);
+      if (payload is! Map || payload['url'] is! String) {
+        throw PhotoUploadException('Réponse d’upload invalide.');
+      }
+
+      return SinglePhotoUploadResult(
+        clientUploadId: payload['uploadId'] as String? ?? clientUploadId,
+        url: payload['url'] as String,
+        reused: payload['reused'] == true,
+      );
+    } on PhotoUploadException {
+      rethrow;
+    } catch (_) {
+      throw PhotoUploadException(
+        'Envoi interrompu. Conservez la photo locale et réessayez plus tard.',
+      );
+    }
+  }
+
   static Future<List<String>> uploadPhotos(List<dynamic> imageFiles) async {
     final url = '$baseUrl/orders/upload';
     final request = http.MultipartRequest('POST', Uri.parse(url));
@@ -809,4 +896,28 @@ class ApiService {
     }
   }
 
+}
+
+/// Résultat stable que l’interface peut conserver dans sa file locale.
+class SinglePhotoUploadResult {
+  const SinglePhotoUploadResult({
+    required this.clientUploadId,
+    required this.url,
+    required this.reused,
+  });
+
+  final String clientUploadId;
+  final String url;
+  final bool reused;
+}
+
+/// Erreur distinguant un échec d’upload d’une erreur de prévisualisation locale.
+class PhotoUploadException implements Exception {
+  const PhotoUploadException(this.message, {this.statusCode});
+
+  final String message;
+  final int? statusCode;
+
+  @override
+  String toString() => message;
 }

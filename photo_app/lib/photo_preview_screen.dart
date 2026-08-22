@@ -35,6 +35,33 @@ class _FormatOption {
   String get label => qualityLabelForAnalysis(analysis);
 }
 
+enum _PhotoUploadStatus { ready, uploading, uploaded, failed }
+
+class _LocalPhotoUpload {
+  _LocalPhotoUpload({
+    required this.localPath,
+    required this.clientUploadId,
+  });
+
+  final String localPath;
+  final String clientUploadId;
+  _PhotoUploadStatus status = _PhotoUploadStatus.ready;
+  String? remoteUrl;
+  String? errorMessage;
+}
+
+/// Le panier conserve des URLs backend : les chemins locaux ne sortent jamais
+/// de cet écran tant qu'une photo n'est pas effectivement envoyée.
+class PhotoPreviewResult {
+  const PhotoPreviewResult({
+    required this.imageUrls,
+    required this.photoDetails,
+  });
+
+  final List<String> imageUrls;
+  final Map<String, Map<String, dynamic>> photoDetails;
+}
+
 // ─────────────────────────────────────────────
 //  Widget principal
 // ─────────────────────────────────────────────
@@ -69,6 +96,9 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
 
   /// Copie locale modifiable des détails
   late final Map<String, Map<String, dynamic>> _localDetails;
+  final Map<String, _LocalPhotoUpload> _uploads = {};
+  int _uploadSequence = 0;
+  bool _isUploadDrainRunning = false;
 
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
@@ -96,10 +126,89 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
     for (final img in widget.images) {
       final size = _localDetails[img]?['size'] as String? ?? '';
       _syncFrameDefaults(img, size);
+      final upload = _LocalPhotoUpload(
+        localPath: img,
+        clientUploadId: _newUploadId(),
+      );
+      if (img.startsWith('http://') ||
+          img.startsWith('https://') ||
+          img.startsWith('/uploads/')) {
+        upload.status = _PhotoUploadStatus.uploaded;
+        upload.remoteUrl = img;
+      }
+      _uploads[img] = upload;
     }
 
-    // Préchargement asynchrone
+    // L'aperçu et le calcul DPI sont locaux et ne dépendent pas du réseau.
     _preloadAndAssignBestFormats();
+    _startPendingUploads();
+  }
+
+  String _newUploadId() =>
+      'p${DateTime.now().microsecondsSinceEpoch}-${++_uploadSequence}';
+
+  bool get _allPhotosUploaded => _uploads.values.every(
+        (upload) => upload.status == _PhotoUploadStatus.uploaded,
+      );
+
+  void _startPendingUploads() {
+    if (_isUploadDrainRunning) return;
+    _isUploadDrainRunning = true;
+    _drainPendingUploads();
+  }
+
+  Future<void> _drainPendingUploads() async {
+    try {
+      while (mounted) {
+        _LocalPhotoUpload? nextUpload;
+        for (final upload in _uploads.values) {
+          if (upload.status == _PhotoUploadStatus.ready) {
+            nextUpload = upload;
+            break;
+          }
+        }
+        if (nextUpload == null) return;
+        await _uploadPhoto(nextUpload);
+      }
+    } finally {
+      _isUploadDrainRunning = false;
+    }
+  }
+
+  Future<void> _uploadPhoto(_LocalPhotoUpload upload) async {
+    if (upload.status == _PhotoUploadStatus.uploading ||
+        upload.status == _PhotoUploadStatus.uploaded) {
+      return;
+    }
+    setState(() {
+      upload.status = _PhotoUploadStatus.uploading;
+      upload.errorMessage = null;
+    });
+
+    try {
+      final preparedPath = await compressForUpload(upload.localPath);
+      final result = await ApiService.uploadSinglePhoto(
+        File(preparedPath),
+        clientUploadId: upload.clientUploadId,
+      );
+      if (!mounted || !_uploads.containsKey(upload.localPath)) return;
+      setState(() {
+        upload.status = _PhotoUploadStatus.uploaded;
+        upload.remoteUrl = result.url;
+      });
+    } on PhotoUploadException catch (error) {
+      if (!mounted || !_uploads.containsKey(upload.localPath)) return;
+      setState(() {
+        upload.status = _PhotoUploadStatus.failed;
+        upload.errorMessage = error.message;
+      });
+    } catch (_) {
+      if (!mounted || !_uploads.containsKey(upload.localPath)) return;
+      setState(() {
+        upload.status = _PhotoUploadStatus.failed;
+        upload.errorMessage = 'Envoi interrompu. Réessayez lorsque le réseau revient.';
+      });
+    }
   }
 
   @override
@@ -210,6 +319,22 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
   }
 
   Future<void> _confirm() async {
+    if (!_allPhotosUploaded) {
+      final pending = _uploads.values
+          .where((upload) => upload.status != _PhotoUploadStatus.uploaded)
+          .length;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '$pending photo${pending > 1 ? 's' : ''} reste${pending > 1 ? 'nt' : ''} à envoyer. '
+            'Vos formats restent conservés.',
+          ),
+          backgroundColor: Colors.orange.shade800,
+        ),
+      );
+      return;
+    }
+
     for (final entry in _localDetails.entries) {
       final size = entry.value['size'] as String? ?? '';
       if (entry.value['withFrame'] == true && _offersFrame(size)) {
@@ -233,12 +358,25 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
       if (!proceed) return;
     }
 
-    for (final entry in _localDetails.entries) {
-      final clean = Map<String, dynamic>.from(entry.value)
+    final finalDetails = <String, Map<String, dynamic>>{};
+    final finalUrls = <String>[];
+    for (final localPath in widget.images) {
+      final remoteUrl = _uploads[localPath]?.remoteUrl;
+      if (remoteUrl == null) return;
+      final clean = Map<String, dynamic>.from(_localDetails[localPath] ?? {})
         ..remove('_autoAssigned');
-      widget.photoDetails[entry.key] = clean;
+      finalDetails[remoteUrl] = clean;
+      finalUrls.add(remoteUrl);
     }
-    if (mounted) Navigator.of(context).pop(true);
+    widget.photoDetails
+      ..clear()
+      ..addAll(finalDetails);
+    if (mounted) {
+      Navigator.of(context).pop(PhotoPreviewResult(
+        imageUrls: finalUrls,
+        photoDetails: finalDetails,
+      ));
+    }
   }
 
   Future<bool> _showUnsuitableWarning() async {
@@ -327,46 +465,24 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
     }
 
     if (pickedFiles.isNotEmpty && mounted) {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const Center(
-          child: CircularProgressIndicator(color: AppColors.primary),
-        ),
-      );
-
-      try {
-        final compressedPaths = await compressBatch(pickedFiles);
-        final compressedFiles = compressedPaths.map((p) => File(p)).toList();
-        final uploadedUrls = await ApiService.uploadPhotos(compressedFiles);
-        
-        if (mounted) {
-          setState(() {
-            final oldLength = widget.images.length;
-            widget.images.addAll(uploadedUrls);
-            
-            // Set details for new photos
-            for (final url in uploadedUrls) {
-              _localDetails[url] = {
-                'size': widget.prices.keys.firstOrNull ?? '',
-                'quantity': 1,
-              };
-            }
-            
-            // Auto sort them to best format
-            _preloadAndAssignBestFormats();
-            
-            // Select the newly added first photo
-            _selectedIndex = oldLength;
-          });
+      final localPaths = pickedFiles.map((file) => file.path).toList();
+      setState(() {
+        final oldLength = widget.images.length;
+        widget.images.addAll(localPaths);
+        for (final path in localPaths) {
+          _localDetails[path] = {
+            'size': widget.prices.keys.firstOrNull ?? '',
+            'quantity': 1,
+          };
+          _uploads[path] = _LocalPhotoUpload(
+            localPath: path,
+            clientUploadId: _newUploadId(),
+          );
         }
-      } catch (e) {
-        // Handle error silently or log
-      } finally {
-        if (mounted) {
-          Navigator.of(context).pop(); // Dismiss loading
-        }
-      }
+        _selectedIndex = oldLength;
+      });
+      _preloadAndAssignBestFormats();
+      _startPendingUploads();
     }
   }
 
@@ -409,6 +525,76 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
         ),
       );
     }
+  }
+
+  Widget _buildUploadBadge(_LocalPhotoUpload upload) {
+    switch (upload.status) {
+      case _PhotoUploadStatus.uploaded:
+        return const Icon(Icons.cloud_done, color: Colors.green, size: 18);
+      case _PhotoUploadStatus.uploading:
+        return const SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+        );
+      case _PhotoUploadStatus.failed:
+        return const Icon(Icons.cloud_off, color: Colors.redAccent, size: 18);
+      case _PhotoUploadStatus.ready:
+        return const Icon(Icons.cloud_upload_outlined, color: Colors.white, size: 18);
+    }
+  }
+
+  Widget _buildUploadStatusBanner(String localPath) {
+    final upload = _uploads[localPath];
+    if (upload == null || upload.status == _PhotoUploadStatus.uploaded) {
+      return const SizedBox.shrink();
+    }
+
+    final failed = upload.status == _PhotoUploadStatus.failed;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: failed ? Colors.red.shade50 : AppColors.primary.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: failed ? Colors.red.shade200 : AppColors.primary.withOpacity(0.2),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              failed ? Icons.cloud_off_outlined : Icons.cloud_upload_outlined,
+              color: failed ? Colors.red.shade700 : AppColors.primary,
+              size: 18,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                failed
+                    ? 'Envoi interrompu : aperçu et format conservés.'
+                    : 'Préparation et envoi en arrière-plan…',
+                style: TextStyle(
+                  color: failed ? Colors.red.shade800 : AppColors.textPrimary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            if (failed)
+              TextButton(
+                onPressed: () {
+                  setState(() => upload.status = _PhotoUploadStatus.ready);
+                  _startPendingUploads();
+                },
+                child: const Text('Réessayer'),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -472,6 +658,8 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
               children: [
                 _buildThumbnailStrip(),
                 const SizedBox(height: 12),
+
+                _buildUploadStatusBanner(selectedImage),
 
                 FutureBuilder<Size>(
                   future: _loadImageSize(selectedImage),
@@ -586,6 +774,7 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
           final url = widget.images[index];
           final isSelected = index == _selectedIndex;
           final dim = _localDetails[url]?['size'] as String? ?? '';
+          final upload = _uploads[url];
 
           return GestureDetector(
             onTap: () => setState(() => _selectedIndex = index),
@@ -638,6 +827,12 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
                         return const SizedBox.shrink();
                       },
                     ),
+                    if (upload != null)
+                      Positioned(
+                        top: 2,
+                        left: 2,
+                        child: _buildUploadBadge(upload),
+                      ),
                     // Bouton de suppression X
                     Positioned(
                       bottom: 0,
@@ -647,6 +842,7 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
                           setState(() {
                             widget.images.removeAt(index);
                             _localDetails.remove(url);
+                            _uploads.remove(url);
                             widget.photoDetails.remove(url);
                             // Adjust selected index if it's out of bounds
                             if (_selectedIndex >= widget.images.length && _selectedIndex > 0) {
@@ -1106,14 +1302,21 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
   }
 
   Widget _buildConfirmButton() {
+    final pendingCount = _uploads.values
+        .where((upload) => upload.status != _PhotoUploadStatus.uploaded)
+        .length;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
       child: ElevatedButton.icon(
-        onPressed: _confirm,
-        icon: const Icon(Icons.check_circle_outline),
+        onPressed: _allPhotosUploaded ? _confirm : null,
+        icon: Icon(_allPhotosUploaded
+            ? Icons.check_circle_outline
+            : Icons.cloud_upload_outlined),
         label: FittedBox(
           fit: BoxFit.scaleDown,
-          child: const Text('Confirmer les formats'),
+          child: Text(_allPhotosUploaded
+              ? 'Confirmer les formats'
+              : 'Envoi en cours ($pendingCount)'),
         ),
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.primary,

@@ -42,6 +42,8 @@ class _AppBootstrapScreenState extends State<AppBootstrapScreen> {
 
   /// Après splash / bootstrap, pas pendant l’écran permissions.
   void _schedulePlayUpdateCheck() {
+    // Une APK locale n’interroge jamais les services de diffusion Play.
+    if (ApiService.isLocalTestBuild) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _loading || _showPermissionsOnboarding) return;
       AppUpdateService.instance.maybePrompt(context);
@@ -62,6 +64,39 @@ class _AppBootstrapScreenState extends State<AppBootstrapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final localConfigurationError = ApiService.localTestConfigurationError;
+    if (localConfigurationError != null) {
+      return Scaffold(
+        backgroundColor: AppColors.background,
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.lan_outlined,
+                      size: 48, color: AppColors.primary),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Configuration locale requise',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    localConfigurationError,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 15, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     if (_loading) {
       return const Scaffold(
         backgroundColor: AppColors.background,
