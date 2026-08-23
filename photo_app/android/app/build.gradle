@@ -20,21 +20,21 @@ android {
         targetSdk 36
         versionCode flutter.versionCode
         versionName flutter.versionName
-        manifestPlaceholders = [appLabel: "Picon"]
+        manifestPlaceholders = [appLabel: "Picon", applicationName: "android.app.Application"]
     }
 
     flavorDimensions "environment"
     productFlavors {
         production {
             dimension "environment"
-            manifestPlaceholders = [appLabel: "Picon"]
+            manifestPlaceholders = [appLabel: "Picon", applicationName: "android.app.Application"]
         }
         local {
             dimension "environment"
             // Installable à côté de la version Play ; réservé aux tests locaux.
             applicationIdSuffix ".local"
             versionNameSuffix "-local"
-            manifestPlaceholders = [appLabel: "PICON Test local"]
+            manifestPlaceholders = [appLabel: "PICON Test local", applicationName: "android.app.Application"]
         }
     }
 
@@ -63,7 +63,7 @@ android {
             signingConfig keystorePropertiesFile.exists()
                     ? signingConfigs.release
                     : signingConfigs.debug
-            manifestPlaceholders = [appLabel: "Picon"]
+            manifestPlaceholders = [appLabel: "Picon", applicationName: "android.app.Application"]
             // Play Console : R8 + minification (score d'optimisation)
             minifyEnabled true
             shrinkResources true
