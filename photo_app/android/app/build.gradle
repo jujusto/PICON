@@ -34,6 +34,8 @@ android {
             // Installable à côté de la version Play ; réservé aux tests locaux.
             applicationIdSuffix ".local"
             versionNameSuffix "-local"
+            // firebase_auth exige Android API 23 ; la production conserve son minSdk historique.
+            minSdk 23
             manifestPlaceholders = [appLabel: "PICON Test local", applicationName: "android.app.Application"]
         }
     }
