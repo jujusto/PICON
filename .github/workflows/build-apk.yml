@@ -48,7 +48,7 @@ jobs:
             --flavor local \
             --target lib/main_local.dart \
             --dart-define=PICON_LOCAL_TEST=true \
-            --dart-define=API_BASE_URL=http://127.0.0.1:8080/api
+            --dart-define=API_BASE_URL=http://192.168.1.85:8080/api
       - name: Publier l’APK comme artefact
         uses: actions/upload-artifact@v7
         with:
